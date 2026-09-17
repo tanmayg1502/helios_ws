@@ -1,0 +1,288 @@
+### Nav2 for the Helios A4WD3 mecanum rover.
+#
+# Consumes:  /map                 from mapping_localization_pkg (slam_toolbox,
+#                                 rtabmap, or amcl over a saved map)
+#            /odometry/filtered   from perception_pkg's EKF
+#            /scan                from the Hokuyo UST-10LX, frame 'laser'
+# Produces:  /cmd_vel             consumed by low_level_control_pkg
+#
+# TF ownership is unchanged: the EKF owns odom -> base_link, whichever mapper is
+# running owns map -> odom. Nav2 publishes NO transforms.
+#
+# HOLONOMIC THROUGHOUT. This rover strafes, so the MPPI motion model is "Omni"
+# and PreferForwardCritic is deliberately absent. Copying a differential-drive
+# param set here silently throws away the lateral degree of freedom.
+#
+# Geometry below is derived from helios_description/urdf/base.xacro. If the
+# rover is re-measured, update it there first and mirror the change here.
+
+# ---------------------------------------------------------------- controller ---
+controller_server:
+  ros__parameters:
+    controller_frequency: 20.0        # Hz, matches roboclaw_driver's control_rate
+    min_x_velocity_threshold: 0.001   # m/s, below this the axis reads as stopped
+    min_y_velocity_threshold: 0.001   # m/s
+    min_theta_velocity_threshold: 0.001  # rad/s
+    failure_tolerance: 0.3            # s of no progress before the controller fails
+    odom_topic: /odometry/filtered    # the EKF output, NOT /wheel/odometry
+    progress_checker_plugins: ["progress_checker"]
+    goal_checker_plugins: ["goal_checker"]
+    controller_plugins: ["FollowPath"]
+
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.5   # m of motion required...
+      movement_time_allowance: 10.0   # ...within this many seconds
+
+    goal_checker:
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.15         # m, roughly half the rover's width
+      yaw_goal_tolerance: 0.20        # rad (~11.5 deg)
+      stateful: true                  # once xy is met, only yaw must still converge
+
+    FollowPath:
+      plugin: "nav2_mppi_controller::MPPIController"
+
+      # MPPI rolls out batch_size candidate trajectories, each time_steps long at
+      # model_dt seconds per step, scores them with the critics below, and takes a
+      # softmax-weighted average. Horizon = time_steps * model_dt = 2.0 s.
+      #
+      # batch_size and time_steps are REDUCED from the upstream defaults
+      # (2000 / 56) because this Jetson already runs the ZED at ~155% CPU. Raise
+      # them toward the defaults if headroom allows; lower them if the controller
+      # misses its 20 Hz rate. Cost scales with batch_size * time_steps.
+      time_steps: 40                  # steps per rollout
+      model_dt: 0.05                  # s per step; 1/controller_frequency
+      batch_size: 1000                # candidate trajectories per cycle
+      iteration_count: 1              # optimizer passes per cycle
+
+      # Sampling spread, per axis. Too small and the optimizer cannot find its way
+      # around obstacles; too large and the command is noisy.
+      vx_std: 0.20                    # m/s
+      vy_std: 0.20                    # m/s, nonzero ONLY because this rover strafes
+      wz_std: 0.40                    # rad/s
+
+      # Ceilings, matching low_level_control_pkg/config/roboclaw.yaml. Keeping
+      # these at or below the driver's own limits means the driver never clamps a
+      # command Nav2 believed it had issued.
+      vx_max: 0.40                    # m/s forward
+      vx_min: -0.35                   # m/s reverse, slightly tighter (no rear sensor)
+      vy_max: 0.40                    # m/s strafe
+      wz_max: 0.80                    # rad/s
+
+      temperature: 0.3                # softmax sharpness; lower = greedier
+      gamma: 0.015                    # control-cost weight, penalises large commands
+      motion_model: "Omni"            # MECANUM. "DiffDrive" would forbid vy.
+      visualize: false                # publishing candidate trajectories costs CPU
+      prune_distance: 1.7             # m of path considered ahead of the robot
+      transform_tolerance: 0.1        # s
+
+      # PreferForwardCritic is deliberately OMITTED. It penalises any motion that
+      # is not forward, which on a mecanum base means penalising strafing, the one
+      # capability this drivetrain has over a differential robot.
+      critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "GoalAngleCritic",
+                "PathAlignCritic", "PathFollowCritic", "PathAngleCritic", "PreferForwardCritic","TwirlingCritic"]
+
+      ConstraintCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0              # penalty for exceeding the velocity limits
+      CostCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 8.0            # penalty for driving into costmap cost
+        near_collision_cost: 253
+        critical_cost: 300.0          # cost treated as effectively lethal
+        consider_footprint: true     # true is exact but much slower; see README
+        collision_cost: 1000000.0
+        near_goal_distance: 1.0       # m, relaxes obstacle cost near the goal
+        trajectory_point_step: 2
+      GoalCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0              # pull toward the goal position
+        threshold_to_consider: 1.4    # m from goal before this activates
+      GoalAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.0              # pull toward the goal heading
+        threshold_to_consider: 0.5    # m from goal before heading matters
+      PathAlignCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 10.0             # stay ON the planned path
+        max_path_occupancy_ratio: 0.05
+        trajectory_point_step: 4
+        threshold_to_consider: 0.5    # m from goal after which path following stops
+        offset_from_furthest: 20
+        use_path_orientations: false  # false suits omni: position matters, heading is free
+      PathFollowCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 8.0              # progress ALONG the path
+        offset_from_furthest: 15
+        threshold_to_consider: 1.5    # m
+      PathAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 6.0
+        offset_from_furthest: 4
+        threshold_to_consider: 0.5     # m
+        max_angle_to_furthest: 0.35    # rad
+        mode: 0                       # 1 = no forward preference; correct for omni
+      PreferForwardCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 8.0
+        threshold_to_consider: 0.5
+      TwirlingCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 10.0             # penalise spinning that does not serve the path
+
+# ------------------------------------------------------------------- planner ---
+planner_server:
+  ros__parameters:
+    expected_planner_frequency: 1.0   # Hz, replan rate driven by the behavior tree
+    planner_plugins: ["GridBased"]
+    GridBased:
+      plugin: "nav2_smac_planner::SmacPlanner2D"
+      tolerance: 0.20                 # m, accept a plan ending this close to the goal
+      downsample_costmap: false       # 5 cm cells are already coarse enough
+      downsampling_factor: 1
+      allow_unknown: true             # plan through unmapped space; SLAM fills it in
+      max_iterations: 1000000
+      max_planning_time: 2.0          # s before the plan attempt is abandoned
+      cost_travel_multiplier: 2.0     # >1 biases paths away from obstacles
+      use_final_approach_orientation: false  # omni: MPPI handles the final heading
+
+# ------------------------------------------------------------------ behaviors ---
+behavior_server:
+  ros__parameters:
+    local_frame: odom
+    global_frame: map
+    robot_base_frame: base_link
+    transform_tolerance: 0.1          # s
+    cycle_frequency: 10.0             # Hz
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "wait"]
+    spin:
+      plugin: "nav2_behaviors::Spin"
+    backup:
+      plugin: "nav2_behaviors::BackUp"
+    drive_on_heading:
+      plugin: "nav2_behaviors::DriveOnHeading"
+    wait:
+      plugin: "nav2_behaviors::Wait"
+    simulate_ahead_time: 2.0          # s of motion checked for collisions first
+    max_rotational_vel: 0.8           # rad/s, matches the drive ceiling
+    min_rotational_vel: 0.2           # rad/s
+    rotational_acc_lim: 2.0           # rad/s^2
+
+# --------------------------------------------------------------- bt_navigator ---
+bt_navigator:
+  ros__parameters:
+    global_frame: map
+    robot_base_frame: base_link
+    odom_topic: /odometry/filtered
+    bt_loop_duration: 10              # ms per behavior-tree tick
+    default_server_timeout: 20        # ms
+    wait_for_service_timeout: 1000    # ms
+    # Which action error codes the tree propagates upward. Without this the
+    # server logs "Error_code parameters were not set" and falls back to these
+    # same two, so setting them explicitly only silences the warning.
+    error_code_names: ["compute_path_error_code", "follow_path_error_code"]
+    # default_nav_to_pose_bt_xml is left unset on purpose: the default
+    # (navigate_to_pose_w_replanning_and_recovery.xml) is what we want, and
+    # hardcoding a path into nav2_bt_navigator's share dir breaks on upgrade.
+
+# ----------------------------------------------------------- velocity smoother ---
+# Sits between the controller and the driver: controller -> /cmd_vel_nav ->
+# smoother -> /cmd_vel. Remapped in navigation.launch.py.
+velocity_smoother:
+  ros__parameters:
+    smoothing_frequency: 20.0         # Hz, matches controller_frequency
+    scale_velocities: false           # keep the commanded direction; do not rescale
+    feedback: "OPEN_LOOP"             # trust the last command, do not read odometry
+    max_velocity: [0.40, 0.40, 0.80]  # [vx m/s, vy m/s, wz rad/s]
+    min_velocity: [-0.35, -0.40, -0.80]
+    # Acceleration ceilings. roboclaw.yaml's drive_accel of 5000 counts/sec^2 is
+    # ~0.98 m/s^2 at 5126 counts/m, so 0.8 stays inside what the controller can
+    # actually deliver and the ramp is never fighting the firmware's own.
+    max_accel: [0.80, 0.80, 2.00]     # [m/s^2, m/s^2, rad/s^2]
+    max_decel: [-0.80, -0.80, -2.00]
+    odom_topic: /odometry/filtered
+    odom_duration: 0.1                # s of odometry history used when CLOSED_LOOP
+    deadband_velocity: [0.0, 0.0, 0.0]
+    velocity_timeout: 1.0             # s without a command before zeroing output
+
+# -------------------------------------------------------------- global costmap ---
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      update_frequency: 1.0           # Hz
+      publish_frequency: 1.0          # Hz
+      global_frame: map
+      robot_base_frame: base_link
+      resolution: 0.05                # m/cell, matches slam_toolbox's map resolution
+      track_unknown_space: true
+      # Rectangular footprint, not robot_radius: this base is 0.38 x 0.38 at the
+      # wheel extremities (wheels reach x=+-0.186 and y=+-0.1875 in base.xacro)
+      # and a circumscribing circle would refuse gaps it actually fits through.
+      footprint: "[[0.19, 0.19], [0.19, -0.19], [-0.19, -0.19], [-0.19, 0.19]]"
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: true   # latched /map from the mapper
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        observation_sources: scan
+        scan:
+          topic: /scan
+          sensor_frame: laser         # matches urg_node2.yaml's frame_id
+          data_type: "LaserScan"
+          clearing: true
+          marking: true
+          max_obstacle_height: 2.0    # m
+          obstacle_max_range: 8.0     # m, inside the UST-10LX's 10 m so returns are trusted
+          obstacle_min_range: 0.05    # m
+          raytrace_max_range: 9.0     # m, clears slightly beyond what it marks
+          raytrace_min_range: 0.05    # m
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        inflation_radius: 0.45        # m, ~1.7x the 0.27 m circumscribed radius
+        cost_scaling_factor: 3.0      # higher = cost falls off faster with distance
+
+# --------------------------------------------------------------- local costmap ---
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      update_frequency: 5.0           # Hz
+      publish_frequency: 2.0          # Hz
+      global_frame: odom              # odom, not map: the local window must not jump
+      robot_base_frame: base_link
+      rolling_window: true
+      width: 4                        # m
+      height: 4                       # m
+      resolution: 0.05                # m/cell
+      footprint: "[[0.19, 0.19], [0.19, -0.19], [-0.19, -0.19], [-0.19, 0.19]]"
+      plugins: ["obstacle_layer", "inflation_layer"]
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        observation_sources: scan
+        scan:
+          topic: /scan
+          sensor_frame: laser
+          data_type: "LaserScan"
+          clearing: true
+          marking: true
+          max_obstacle_height: 2.0    # m
+          obstacle_max_range: 6.0     # m, shorter than global: only the local window matters
+          obstacle_min_range: 0.05    # m
+          raytrace_max_range: 7.0     # m
+          raytrace_min_range: 0.05    # m
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        inflation_radius: 0.45        # m
+        cost_scaling_factor: 3.0

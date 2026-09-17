@@ -115,6 +115,97 @@ amcl:
     # does not need the RViz click again.
     save_pose_rate: 0.5      # Hz the last pose is written to the parameter server
 
+# Automatic re-localization. Started by amcl_localization.launch.py alongside
+# AMCL, and needs no trigger: it watches AMCL's covariance and, when the rover
+# is lost, drives it in short legs picked from the live LOCAL costmap until the
+# particle cloud tightens. No teleop, no RViz click, no service call.
+#
+# REQUIRES Nav2 running. The local costmap and the spin / drive_on_heading
+# behaviors both live there. Without it this node just watches and logs.
+amcl_recovery:
+  ros__parameters:
+    enabled: true            # false disables recovery without unwiring the node
+
+    # --- Inputs --------------------------------------------------------------
+    # The LOCAL costmap, not the global one. It is built in the odom frame from
+    # the live laser and never consults /map, so it stays correct while AMCL is
+    # still wrong. That is what makes it safe to steer by while lost.
+    costmap_topic: '/local_costmap/costmap'
+    amcl_pose_topic: '/amcl_pose'
+    base_frame: 'base_link'  # must match base_frame_id above
+
+    # --- When is the rover lost ----------------------------------------------
+    # Standard deviations, not variances. Entering recovery uses these loose
+    # thresholds and leaving it uses the tight max_* ones below, so a pose
+    # hovering near one value cannot oscillate the node in and out.
+    lost_position_std: 0.60  # m, worse than this counts as lost
+    lost_yaw_std: 0.40       # rad (23 deg)
+    lost_confirm_time: 5.0   # s the rover must stay lost before recovery starts
+    # AMCL publishes /amcl_pose only on a filter update, and an update needs
+    # motion. A stationary rover that was never given a pose therefore sits
+    # silent forever, which is the lost case, not a healthy one.
+    pose_timeout: 30.0       # s of silence after AMCL goes active
+    cooldown: 30.0           # s before another attempt may start
+    monitor_period: 1.0      # s between checks
+
+    # --- Kidnap detection ----------------------------------------------------
+    # Second, independent detector. The covariance test above needs AMCL to
+    # NOTICE it is lost, which needs a filter update, which needs the EKF to
+    # have reported motion. Carry the rover with the camera struggling and no
+    # update ever happens: the last /amcl_pose still reads converged and the
+    # kidnap is invisible. Wheels disagreeing with the camera is visible either
+    # way, and fires in about a second instead of lost_confirm_time.
+    #
+    # These are the same two topics ekf.yaml fuses as odom0 and odom1, compared
+    # before the filter blends them into one number.
+    lift_detection_enabled: true
+    wheel_odom_topic: '/wheel/odometry'
+    visual_odom_topic: '/zed/odom_with_cov'
+    # Wheels this slow count as stationary. Mecanum roller slip cannot reach
+    # this state: slip is a scale error on a TURNING wheel (measured 0.9686 of
+    # truth in wheel_odometry.yaml), not a still wheel under real motion.
+    lift_max_wheel_speed: 0.02   # m/s
+    # The camera must claim at least this much for the pair to count as a
+    # disagreement. Comfortably above the ~2e-5 m/s the ZED reports parked.
+    lift_min_visual_speed: 0.15  # m/s
+    lift_confirm_time: 1.0       # s of disagreement before it counts as a lift
+
+    # --- When has it recovered -----------------------------------------------
+    max_position_std: 0.25   # m, per-axis x and y standard deviation
+    max_yaw_std: 0.15        # rad (8.6 deg)
+    max_legs: 12             # legs per attempt before escalating or giving up
+
+    # --- Motion --------------------------------------------------------------
+    # A full turn. AMCL gates filter updates on translation OR rotation
+    # (update_min_a 0.20 rad), so spinning does drive updates, and it covers the
+    # 90 deg the 270 deg Hokuyo cannot see while stationary.
+    survey_yaw: 6.283185307179586   # rad, 2*pi
+    leg_distance: 1.5               # m driven per leg
+    leg_speed: 0.2                  # m/s, half of roboclaw.yaml's 0.40 ceiling
+
+    # --- Direction choice ----------------------------------------------------
+    candidate_count: 36      # headings sampled evenly over 2*pi (10 deg apart)
+    ray_range: 3.0           # m, how far each candidate ray is cast
+    # Clearance required beyond leg_distance before a heading is eligible.
+    # 0.45 m matches nav2_params.yaml's inflation_radius, so a leg never ends
+    # inside an inflated obstacle.
+    safety_margin: 0.45      # m
+    # Costs at or above this block a ray. 90 sits between nav2's inflated cost
+    # band and its 253 lethal value, so inflation is avoided, not just contact.
+    lethal_threshold: 90
+    # Treat unobserved cells as blocking. In a rolling local costmap, unknown
+    # means the laser has not seen that cell, which is not the same as free.
+    unknown_is_blocking: true
+
+    # Scoring is  clearance - turn_weight*|turn| - retrace_penalty.
+    turn_weight: 0.3         # m of clearance one radian of rotation is worth
+    # Without this the rover ping-pongs along one corridor, because reversing
+    # always scores well: it just drove through there.
+    retrace_penalty: 1.5     # m of score subtracted for reversing
+    retrace_cone: 0.6        # rad, half-angle around the reverse direction
+
+    action_timeout: 60.0     # s allowed per spin or drive before it is abandoned
+
 map_server:
   ros__parameters:
     # Overridden by the launch file's `map:=` argument; the value here is only

@@ -20,7 +20,7 @@ different ways:
 | Source | Good at | Bad at |
 |---|---|---|
 | Wheel encoders (`/wheel/odometry`) | Always available, smooth, accurate short-term | Slips, especially sideways on mecanum wheels |
-| ZED visual-inertial (`/zed/zed_node/odom`) | No slip, low drift over distance | Fails in dark or featureless spaces; can lose tracking entirely |
+| ZED visual-inertial (`/zed/odom_with_cov`) | No slip, low drift over distance | Fails in dark or featureless spaces; can lose tracking entirely |
 
 An **EKF** (Extended Kalman Filter) merges them. The short version of how: it
 keeps a running estimate of the robot's state plus a measure of how uncertain
@@ -100,13 +100,14 @@ everything for a given device is in one place:
 | | where | what |
 |---|---|---|
 | Camera | [`camera/custom_covariance/`](../camera/custom_covariance/README.md) | Republishes the ZED's odometry with the twist covariance the wrapper never sets |
+| Camera | [`camera/zed_custom_tuning/`](../camera/zed_custom_tuning/README.md) | Our parameter overrides on the ZED wrapper, passed as `ros_params_override_path` |
 | LiDAR | [`lidar/custom_config/`](../lidar/custom_config/README.md) | Hokuyo driver parameters, its launch file, and the laser-only RViz layout |
 
-Both are **ours**, deliberately placed *outside* the submodule they sit next
-to, which is the entire point. Editing vendor content inside a pinned submodule
-gets silently reverted by `git submodule update`.
+All three are **ours**, deliberately placed *outside* the submodule they sit
+next to, which is the entire point. Editing vendor content inside a pinned
+submodule gets silently reverted by `git submodule update`.
 
-`bringup.launch.py` pulls both in. What remains in this package is the fusion
+`bringup.launch.py` pulls all three in. What remains in this package is the fusion
 layer itself: the EKF, its config, and the layout that shows both sensors at
 once.
 
@@ -119,7 +120,9 @@ this file is what makes it a *mecanum rover* EKF rather than a generic one.
 |---|---|---|
 | `frequency` | 30.0 | Output rate, Hz |
 | `sensor_timeout` | 0.2 | Seconds before an input is treated as stale |
-| `transform_time_offset` | 0.1 | Post-dates the published transform, see below |
+| `transform_time_offset` | 0.02 | Future-dates the published transform. **See below before changing it** |
+| `smooth_lagged_data` | true | Rewind and re-apply a measurement that arrives late |
+| `history_length` | 0.3 | Seconds of state history the rewind can reach back through |
 | `two_d_mode` | true | Force z, roll, pitch to zero |
 | `publish_tf` | true | This node owns `odom → base_link` |
 | `world_frame` | `odom` | Makes this a *local* filter |
@@ -138,28 +141,56 @@ non-drifting global estimate is the mapping layer's job.
 Both `odom0` (wheels) and `odom1` (ZED) enable exactly `vx`, `vy` and `vyaw`,
 which is the "velocities only" decision made concrete.
 
-`odom1_twist_rejection_threshold: 2.0` discards ZED velocity readings that jump
-implausibly: the VIO occasionally resets and reports a large false jump, and
-without this the filter would follow it.
+`odom1_twist_rejection_threshold: 5.0` discards ZED velocity readings that jump
+implausibly. It is a Mahalanobis gate, so its meaning depends on the ZED's
+measurement covariance: at `vyaw` variance 0.01 (sigma 0.1 rad/s), 5.0 rejects
+disagreements beyond 0.5 rad/s, about 28.6 deg/s. That is permissive enough to
+survive the transient disagreement at the start and end of every turn, and still
+tight enough to catch a gross VIO failure.
 
-**`transform_time_offset: 0.1`** post-dates the published transform by 100 ms.
-The EKF stamps its transform with the time of the newest measurement it fused,
-which lands roughly 42 ms in the past. ZED data is stamped *fresher* than that,
-so a consumer looking up the transform at the camera's timestamp asks for a
-moment newer than any EKF data exists for, and the lookup fails with
-"extrapolation into the future", visible in RViz as
-`Could not transform from [zed_left_camera_frame] to [map]`. This re-stamps the
-transform rather than extrapolating the pose, so a consumer asking for time T
-gets the pose from T−0.1s; at indoor speeds that is about 3 cm. slam_toolbox
-does the same thing on its own `map → odom` edge.
+It was raised from 2.0, which rejected past only 11.5 deg/s and so threw the ZED
+out during exactly the manoeuvres it is best at. Against a de-biased gyro over a
+99.7 s spin, the ZED twist was the most accurate yaw source on the robot
+(+0.03%) while the wheels read 3.3% low. Note that `odom0` (wheels) has **no**
+gate at all, so an encoder spike enters unfiltered.
+
+**`transform_time_offset: 0.02`, and keep it small.** This parameter does
+**not** extrapolate the pose forward. It relabels the same pose with a later
+timestamp, so every millisecond of it is pure systematic lag: a consumer asking
+for time T is handed the pose the robot was actually at some time earlier.
+
+It was 0.1, and that was measured causing real harm. The published
+`odom → base_link` came out future-dated by +100.6 ms relative to
+`/odometry/filtered`. At 0.83 rad/s that misplaces every laser scan by 4.8 deg,
+which is what smeared the map and produced doubled wall lines during rotation.
+The visible symptom on the robot was the scan appearing to swing backwards for
+about a second when you started a turn, then catching up.
+
+0.02 is the smallest value that still keeps a small timing margin for consumers
+whose data is stamped fresher than the EKF's newest fused measurement. If RViz
+starts reporting "extrapolation into the future" on camera data, the fix is
+`smooth_lagged_data` and the queue settings, **not** a larger offset here.
+
+**`smooth_lagged_data: true` with `history_length: 0.3`.** The two inputs do not
+arrive with the same delay. Measured header-stamp to arrival:
+
+| Input | median | p90 | max |
+|---|---|---|---|
+| `/wheel/odometry` | 1.6 ms | | |
+| `/zed/odom_with_cov` | 58.1 ms | 69 ms | 315 ms |
+
+That is roughly 1.7 filter cycles of skew. Without the rewind, the ZED
+measurement is folded in with a clamped zero time delta rather than at the
+instant it describes. 0.3 s clears the measured p90 by 4x, and is deliberately
+not larger: every lagged measurement re-integrates the whole window.
 
 Process and initial covariances are left at `robot_localization` defaults.
 
 ### `launch/bringup.launch.py`
 
 The whole sensing layer in one command, in order: robot description → wheel
-odometry → ZED → laser → EKF. Two of its settings are non-obvious and are
-documented at length inside the file:
+odometry → ZED → `zed_odom_covariance_node` → laser → EKF. Two of its settings
+are non-obvious and are documented at length inside the file:
 
 - **`enable_ipc:=false` on the ZED wrapper is required, not an optimisation.**
   With intra-process communication enabled, the wrapper cannot use a static
@@ -237,10 +268,15 @@ ros2 launch mapping_localization_pkg rtabmap.launch.py        # 3D
 input, so check the inputs first:
 
 ```bash
-ros2 topic hz /wheel/odometry          # matches encoder rate
-ros2 topic hz /zed/zed_node/odom       # ~50 Hz
+ros2 topic hz /wheel/odometry          # matches encoder rate, ~30 Hz
+ros2 topic hz /zed/odom_with_cov       # ~30 Hz, what the EKF actually fuses
 ros2 node info /ekf_filter_node        # both must appear as subscriptions
 ```
+
+`/zed/odom_with_cov` silent while `/zed/zed_node/odom` publishes means
+`zed_odom_covariance_node` is not running, and `odom1` is starved. The raw
+wrapper topic must never be fused directly; see
+[`custom_covariance`](../camera/custom_covariance/README.md) for why.
 
 **2. Output is running:**
 
@@ -303,9 +339,12 @@ sliding across static walls means the fused estimate disagrees with reality.
   fusion so `/zed/zed_node/odom` becomes purely visual.
 - **Estimate is jumpy:** tune `process_noise_covariance`, currently at defaults.
   Raise it to trust measurements more, lower it to trust the model more.
-- **RViz reports transform errors on camera data:** raise
-  `transform_time_offset`. Lowering it toward 0.05 reduces the positional lag
-  but leaves less margin.
+- **The map smears or walls double during turns:** check
+  `transform_time_offset` first. It is lag, not extrapolation, so a large value
+  misplaces every scan by `yaw_rate x offset`. Keep it at 0.02.
+- **RViz reports "extrapolation into the future" on camera data:** raise
+  `history_length` and check `smooth_lagged_data` is on. Do **not** raise
+  `transform_time_offset` to paper over it.
 
 ---
 

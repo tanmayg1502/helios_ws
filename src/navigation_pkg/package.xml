@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>navigation_pkg</name>
+  <version>0.1.0</version>
+  <description>
+    Nav2 autonomous navigation for the Helios A4WD3 mecanum rover. Consumes the
+    map from mapping_localization_pkg and the fused odometry from
+    perception_pkg, and drives low_level_control_pkg by publishing /cmd_vel.
+    Config and launch only; every algorithm is an upstream nav2 node.
+  </description>
+  <maintainer email="upadhyp1@uci.edu">pran</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- Only the servers this package actually launches. nav2_bringup is NOT a
+       dependency: navigation.launch.py wires the lifecycle itself, so the
+       node set stays trimmed to what a mecanum rover on a Jetson needs. -->
+  <exec_depend>nav2_controller</exec_depend>
+  <exec_depend>nav2_mppi_controller</exec_depend>
+  <exec_depend>nav2_planner</exec_depend>
+  <exec_depend>nav2_smac_planner</exec_depend>
+  <exec_depend>nav2_behaviors</exec_depend>
+  <exec_depend>nav2_bt_navigator</exec_depend>
+  <exec_depend>nav2_velocity_smoother</exec_depend>
+  <exec_depend>nav2_lifecycle_manager</exec_depend>
+  <exec_depend>nav2_costmap_2d</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

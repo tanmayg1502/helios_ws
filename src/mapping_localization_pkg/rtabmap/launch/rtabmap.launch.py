@@ -94,6 +94,27 @@ def generate_launch_description() -> LaunchDescription:
                 ],
                 description="Full path to the run database. Overrides run_name.",
             ),
+            # Nav2's global_costmap static_layer subscribes to /map. RTAB-Map's
+            # node runs in the 'rtabmap' namespace, so its default 'map' resolves
+            # to /rtabmap/map and the costmap stays empty with no error at all.
+            # Pass map_topic:=/map when navigating; the leading slash escapes the
+            # namespace. Default keeps the namespaced topic so nothing collides
+            # with slam_toolbox's /map during a side-by-side evaluation run.
+            DeclareLaunchArgument(
+                "map_topic",
+                default_value="map",
+                description="Occupancy grid topic. Use /map for Nav2, which "
+                "subscribes to /map and cannot see /rtabmap/map.",
+            ),
+            # Localization mode only. Without it RTAB-Map resumes from wherever
+            # the previous session shut down (RGBD/StartAtOrigin=false), which is
+            # wrong whenever the rover has been moved since.
+            DeclareLaunchArgument(
+                "initial_pose",
+                default_value="",
+                description='Starting pose in localization mode: "x y z roll '
+                'pitch yaw". Empty = resume from the last saved localization.',
+            ),
             DeclareLaunchArgument(
                 "rtabmap_viz",
                 default_value="false",
@@ -166,6 +187,8 @@ def generate_launch_description() -> LaunchDescription:
                             "frame_id": "base_link",
                             "map_frame_id": "map",
                             "publish_tf_map": LaunchConfiguration("publish_tf_map"),
+                            "map_topic": LaunchConfiguration("map_topic"),
+                            "initial_pose": LaunchConfiguration("initial_pose"),
                             # RTAB-Map's own internal parameters, passed as 'args' because they are
                             # not ROS node parameters. Full reasoning and the measurements behind
                             # each value are in the README's "Why these parameter values" section.
@@ -180,11 +203,24 @@ def generate_launch_description() -> LaunchDescription:
                             #  * Optimizer/GravitySigma needs imu_topic below AND
                             #    sensors.publish_imu_tf on the ZED side, or it is inert and the
                             #    graph holds zero Gravity links.
+                            #  * Grid/Sensor is set EXPLICITLY. RTAB-Map 0.22's own
+                            #    default is 1 (camera depth), and neither upstream's
+                            #    launch file nor this one used to override it, so the
+                            #    occupancy grid was built from a ~110 deg camera cone
+                            #    rather than the Hokuyo's 270 deg sweep. Measured by
+                            #    reprocessing one database with only the grid source
+                            #    changed: obstacle cells 3.43 MB from the laser vs
+                            #    1.65 MB from depth, free space down ~40%. Grid/RangeMax
+                            #    must be explicit alongside it, because RTAB-Map only
+                            #    auto-widens it to the sensor's range when Grid/Sensor
+                            #    is 0, and its own default is 5 m against a 10 m laser.
                             "args": "--Optimizer/Strategy 2 --Reg/Strategy 2 "
                             "--Optimizer/GravitySigma 0.3 "
                             "--RGBD/NeighborLinkRefining true "
                             "--Optimizer/Robust false "
                             "--RGBD/OptimizeMaxError 0 "
+                            "--Grid/Sensor 0 "
+                            "--Grid/RangeMax 10.0 "
                             "--Mem/SaveDepth16Format true",
                             "localization": LaunchConfiguration("localization"),
                             "database_path": LaunchConfiguration("database_path"),

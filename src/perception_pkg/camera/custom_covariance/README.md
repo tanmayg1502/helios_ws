@@ -118,11 +118,18 @@ side with `wheel_odometry.yaml`, because the **ratio between the two files is
 the entire fusion policy**. The EKF has no other mechanism for deciding which
 sensor to believe.
 
-| axis | wheel | ZED | who wins, and why |
-|---|---|---|---|
-| `vx` | 0.01 | 0.02 | Wheels. Encoders are direct in straight-line rolling |
-| `vy` | 0.05 | 0.02 | ZED. Mecanum rollers make lateral wheel data untrustworthy; VIO sees the body actually move |
-| `vyaw` | 0.05 | 0.01 | ZED. Its odom is visual-*inertial*, and a gyro beats a rate differenced from wheel speeds |
+| axis | wheel | ZED | ratio | who wins, and why |
+|---|---|---|---|---|
+| `vx` | 0.01 | 0.02 | 2:1 wheels | Wheels. Encoders are direct in straight-line rolling |
+| `vy` | 0.05 | 0.02 | 2.5:1 ZED | ZED. Mecanum rollers make lateral wheel data untrustworthy; VIO sees the body actually move |
+| `vyaw` | **0.5** | 0.01 | **50:1 ZED** | ZED. Its odom is visual-*inertial*, and a gyro beats a rate differenced from wheel speeds |
+
+The `vyaw` ratio is deliberately extreme. Wheel yaw on a mecanum base comes from
+encoder differences over a lever arm the rollers make uncertain, which produces a
+**scale bias** rather than noise, and bias integrates instead of averaging out.
+See `wheel_odometry.yaml`'s note: a 16.8 m loop accumulated 37 deg of yaw error
+against a 2.0 deg ground truth. The wheels stay in the filter as a fallback for
+when the camera loses tracking, not as a yaw source.
 
 > **Do not derive these from a stationary recording.** Parked, this camera
 > reports ~2e-5 m/s of noise; a variance computed from that is ~1e-9, exactly
@@ -152,7 +159,11 @@ after:
 - `wheel_odometry/config/wheel_odometry.yaml`: the other half of the ratio.
 - `sensor_fusion/launch/bringup.launch.py`: starts this node with the camera.
 
-`odom1_twist_rejection_threshold` in `ekf.yaml` still **needs re-tuning**. It was
-keyed off the substituted 1e-9; with a real covariance the innovation distances
-collapse by ~4000x, so the current value of 2.0 is close to inert and will not
-catch a genuine VIO failure. Re-measure on a moving run.
+`odom1_twist_rejection_threshold` in `ekf.yaml` was **raised 2.0 -> 5.0** as a
+consequence of this fix. Once a real covariance replaced the substituted 1e-9,
+the gate became meaningful again, and at `vyaw` variance 0.01 a threshold of 2.0
+rejected any disagreement past 11.5 deg/s, which a rover spinning at 20-48 deg/s
+crosses at the start and end of every turn. 5.0 allows 28.6 deg/s.
+
+That number is still **not measured**. The right way to set it is from the
+observed innovation distribution on a moving run; do that and replace it.

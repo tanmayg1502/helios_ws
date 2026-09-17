@@ -80,12 +80,25 @@ In summary:
 | Parameter | Vendor | Ours | Why |
 |---|---|---|---|
 | `general.grab_compute_capping_fps` | `0.0` (no cap) | `30.0` | Halve depth compute while the sensor keeps capturing at 60 fps, so exposure stays short and turns stay unblurred |
-| `general.pub_frame_rate` | `0.0` (= grab rate, 60) | `15.0` | Nothing downstream reads images faster; stops serialising 60 image+depth pairs/s |
+| `general.pub_frame_rate` | `0.0` (= grab rate, 60) | `30.0` | Stops serialising 60 image+depth pairs/s, while keeping the RGB-D publish period short enough that a mispaired frame is ~21 ms of skew, not ~100 ms |
+| `depth.openni_depth_mode` | `false` (32FC1 metres) | `true` (16UC1 mm) | Matches RTAB-Map's `Mem/SaveDepth16Format`, so depth stores with RVL natively instead of being converted every frame |
+
+**Keep `pub_frame_rate` equal to `grab_compute_capping_fps`.** Publishing faster
+than the SDK processes buys nothing; processing faster than we publish wastes the
+compute. It was 15.0 until 2026-08-25, on the reasoning that RTAB-Map's keyframe
+rate is 1 Hz so nothing needed more. That was right about throughput and wrong
+about pairing: ~11.9% of depth frames have no RGB frame at the same stamp, and
+throttling does not make those drops rarer, it stretches each one from ~21 ms to
+~100 ms of skew. The geometric error is `yaw_rate x skew`. If CPU becomes the
+binding constraint, lower **both** together.
 
 The file also records, as comments, the things that were **considered and
-deliberately left alone** (`depth_mode`, `point_cloud_freq`, `area_memory`,
-`mapping_enabled`, `od_enabled`) so re-opening one of those is a decision
-rather than a rediscovery.
+deliberately left alone**, so re-opening one of those is a decision rather than a
+rediscovery: `depth_mode`, `depth_confidence` / `depth_texture_conf` (tried and
+reverted: it cut flying pixels and starved loop closure 5x), `point_cloud_freq`,
+`area_memory` (re-examined and confirmed, with numbers), `mapping_enabled`,
+`od_enabled`, and `video.auto_exposure_time_range_max` (added and reverted
+un-validated; the arithmetic still looks right).
 
 Only values we actually change are listed. Copying a vendor default in "for
 reference" silently pins it, and a future submodule bump that improves that
@@ -121,15 +134,22 @@ the values landed. Read them back off the live node:
 
 ```bash
 ros2 param get /zed/zed_node general.grab_compute_capping_fps   # 30.0
-ros2 param get /zed/zed_node general.pub_frame_rate             # 15.0
+ros2 param get /zed/zed_node general.pub_frame_rate             # 30.0
+ros2 param get /zed/zed_node depth.openni_depth_mode            # true
 ```
 
 Then confirm the intended effect, and the side effect:
 
 ```bash
-ros2 topic hz /zed/zed_node/rgb/color/rect/image   # ~15 Hz, was ~30
+ros2 topic hz /zed/zed_node/rgb/color/rect/image   # ~30 Hz, was ~60
 ros2 topic hz /zed/zed_node/odom                   # ~30 Hz, was ~50  <-- the side effect
 ros2 topic hz /odometry/filtered                   # must stay ~30 Hz
+```
+
+Depth should also come out as `16UC1`, not `32FC1`:
+
+```bash
+ros2 topic echo /zed/zed_node/depth/depth_registered --field encoding --once
 ```
 
 `/zed/zed_node/odom` dropping is expected: positional tracking runs off

@@ -251,7 +251,8 @@ room points at `laser_mount_joint` in the URDF.
 
 ```bash
 ros2 topic hz /zed/zed_node/rgb/color/rect/image      # ~30 Hz
-ros2 topic hz /zed/zed_node/odom                      # ~50 Hz
+ros2 topic hz /zed/zed_node/odom                      # ~30 Hz
+ros2 topic hz /zed/odom_with_cov                      # ~30 Hz, what the EKF fuses
 ros2 topic echo /zed/zed_node/pose/status --once      # tracking state
 ```
 

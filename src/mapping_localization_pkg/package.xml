@@ -32,6 +32,13 @@
        used or required — amcl_localization.launch.py starts map_server,
        amcl and lifecycle_manager itself. -->
   <exec_depend>nav2_amcl</exec_depend>
+  <exec_depend>nav2_msgs</exec_depend>
+  <exec_depend>lifecycle_msgs</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
   <exec_depend>nav2_lifecycle_manager</exec_depend>
   <!-- Consumes topics from these; expects sensor_fusion/bringup.launch.py
        already running rather than launching them itself. -->

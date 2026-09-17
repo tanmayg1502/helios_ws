@@ -186,7 +186,7 @@ halved:
 | File | Keys | Used for |
 |---|---|---|
 | `perception_pkg/wheel_odometry/config/wheel_odometry.yaml` | `wheel_radius`, `wheelbase`, `track_width` | Encoder counts → distance and yaw |
-| `low_level_control_pkg/config/teleop.yaml` | `wheel_radius`, `wheelbase`, `track_width` | m/s → encoder counts/sec |
+| `low_level_control_pkg/config/roboclaw.yaml` | `wheel_radius`, `wheelbase`, `track_width` | m/s → encoder counts/sec |
 
 **If you re-measure the rover, all three files must be updated together.** They
 are not shared automatically.

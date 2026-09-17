@@ -43,4 +43,24 @@ install(
   DESTINATION share/${PROJECT_NAME}/localization
 )
 
+# The only Python in this package: amcl_recovery re-localizes the rover without
+# a human, so it has to be a running node rather than config.
+#
+# Both files go to lib/<pkg>/ rather than a Python package in site-packages.
+# Python puts a script's own directory first on sys.path, so the node's
+# `from amcl_recovery import ...` resolves to its sibling with no package
+# machinery, and the two files stay next to each other in the source tree.
+install(
+  PROGRAMS
+    localization/amcl_recovery_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME amcl_recovery_node
+)
+
+install(
+  FILES
+    localization/amcl_recovery.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 ament_package()

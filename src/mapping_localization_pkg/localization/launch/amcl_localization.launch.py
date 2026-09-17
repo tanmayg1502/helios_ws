@@ -13,24 +13,27 @@ DO NOT run this alongside slam_toolbox.launch.py, or rtabmap with
 publish_tf_map:=true -- all three publish map -> odom and would fight. The EKF
 still owns odom -> base_link in every case.
 
-Starts three nodes, because nav2_bringup is NOT installed on this machine
-(only the individual nav2_* packages are):
+Starts four nodes. nav2_bringup is not used here; the individual nav2_*
+packages are wired up directly:
   map_server        - serves the saved .pgm/.yaml on /map
   amcl              - particle filter, publishes map -> odom + /particlecloud
   lifecycle_manager - drives both through configure -> activate, since they
                       are lifecycle nodes that do not self-activate
+  amcl_recovery     - ours. Watches AMCL and drives the rover back to a
+                      converged pose on its own whenever it goes lost
 
-AFTER LAUNCHING, the rover does not know where it is yet. Give it a pose:
-  - RViz "2D Pose Estimate": click the rover's position, drag its heading.
-    Works from anywhere in the map; this is the normal path.
-  - or `ros2 service call /reinitialize_global_localization
-    std_srvs/srv/Empty` to scatter particles over the whole map instead.
-Then DRIVE. AMCL only updates after update_min_d/update_min_a of motion, so a
-stationary rover never converges. Teleop is fine; pushing it by hand works
-too, since AMCL reads odometry rather than commands. Watch /particlecloud in
-RViz tighten as it goes.
+THE ROVER RE-LOCALIZES ITSELF. amcl_recovery needs no pose estimate, no
+teleop and no service call: it notices that AMCL's covariance has stayed bad,
+then spins and drives short legs picked from the live local costmap until the
+particle cloud tightens. That covers both startup (no pose yet) and getting
+lost mid-run. Thresholds and motion limits are in amcl.yaml.
 
-Toggle with: rviz:=true use_map_topic:=false
+It REQUIRES Nav2 to be running, because the local costmap it steers by and the
+spin / drive_on_heading behaviors it drives through both live there. Without
+Nav2 it stays passive and logs why. Set amcl_recovery.enabled false in
+amcl.yaml to go back to placing the pose by hand in RViz.
+
+Toggle with: rviz:=true recovery:=false
 """
 
 import os
@@ -47,8 +50,8 @@ def generate_launch_description() -> LaunchDescription:
     """Builds the AMCL localization launch description.
 
     Returns:
-        map_server, amcl and the lifecycle_manager that activates them,
-        plus an optional RViz node.
+        map_server, amcl, the lifecycle_manager that activates them and the
+        self-triggering recovery node, plus an optional RViz node.
     """
     pkg = get_package_share_directory("mapping_localization_pkg")
     amcl_yaml = os.path.join(pkg, "localization", "config", "amcl.yaml")
@@ -57,6 +60,7 @@ def generate_launch_description() -> LaunchDescription:
     map_yaml = LaunchConfiguration("map")
     use_rviz = LaunchConfiguration("rviz")
     autostart = LaunchConfiguration("autostart")
+    use_recovery = LaunchConfiguration("recovery")
 
     # The map path arrives as a launch argument, so it has to override what is
     # in amcl.yaml rather than being baked into it -- a saved map is a run
@@ -94,6 +98,17 @@ def generate_launch_description() -> LaunchDescription:
         ],
     )
 
+    # Not a lifecycle node, so it is not in lifecycle_manager's list. It polls
+    # /amcl/get_state itself and stays passive until AMCL reports active.
+    recovery = Node(
+        package="mapping_localization_pkg",
+        executable="amcl_recovery_node",
+        name="amcl_recovery",
+        output="screen",
+        parameters=[amcl_yaml],
+        condition=IfCondition(use_recovery),
+    )
+
     rviz = Node(
         package="rviz2",
         executable="rviz2",
@@ -123,9 +138,16 @@ def generate_launch_description() -> LaunchDescription:
                 default_value="true",
                 description="Drive map_server and amcl to active automatically.",
             ),
+            DeclareLaunchArgument(
+                "recovery",
+                default_value="true",
+                description="Start amcl_recovery, which re-localizes the rover "
+                "by itself when AMCL goes lost. Needs Nav2 running.",
+            ),
             map_server,
             amcl,
             lifecycle_manager,
+            recovery,
             rviz,
         ]
     )

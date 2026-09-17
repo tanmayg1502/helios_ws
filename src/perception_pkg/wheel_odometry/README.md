@@ -37,8 +37,12 @@ and `L = (wheelbase + track_width) / 2`:
 ```
 forward     dx = ( d_fl + d_fr + d_rl + d_rr) / 4
 sideways    dy = (-d_fl + d_fr + d_rl - d_rr) / 4
-rotation    dθ = (-d_fl + d_fr - d_rl + d_rr) / (4·L)
+rotation    dθ = (-d_fl + d_fr - d_rl + d_rr) / (4·L) · yaw_scale
 ```
+
+`yaw_scale` is an empirical correction on the rotation term only, because the
+rollers slip during a turn and the effective lever arm is not the geometric one.
+It is covered under [the config](#configwheel_odometryyaml).
 
 Read those as difference patterns: all four the same → pure forward; diagonal
 pairs opposed → strafe; left pair opposed to right pair → spin in place. This is
@@ -106,8 +110,9 @@ package.xml                 Package metadata and dependencies.
 ### `wheel_odometry/mecanum_odometry.py`
 
 The maths, with no ROS imports, so it can be read and tested on its own:
-`meters_per_count`, `lever_arm`, `body_displacement` (the forward kinematics
-above) and `PlanarPose` (midpoint-heading integration). It is the exact inverse
+`validate_geometry`, `meters_per_count`, `lever_arm`, `body_displacement` (the
+forward kinematics above, including `yaw_scale`), `PlanarPose`
+(midpoint-heading integration) and `yaw_to_quaternion_zw`. It is the exact inverse
 of `low_level_control_pkg`'s `mecanum_kinematics`; change one and check the
 other.
 
@@ -132,12 +137,13 @@ wiring. If a wheel is rewired, this is the file to change. The config's
 | `wheelbase` | 0.220 m | Front↔rear spacing; affects rotation scale |
 | `track_width` | 0.330 m | Left↔right spacing; affects rotation scale |
 | `counts_per_rev` | 2448.0 | 12 PPR × 4 (quadrature) × 51 (gearbox) |
+| `yaw_scale` | 1.032 | Corrects the mecanum roller-slip yaw bias. See below |
 | `invert_*` (×4) | all `false` | Flip if a wheel counts down when driven forward |
 | `publish_tf` | `true` | Overridden to `false` by the bring-up |
-| `pose_covariance_diagonal` | `[0.01, 0.05, 1e+6, 1e+6, 1e+6, 0.05]` | How much the EKF should trust each channel |
-| `twist_covariance_diagonal` | same | Same, for velocities |
+| `pose_covariance_diagonal` | `[0.01, 0.05, 1e+6, 1e+6, 1e+6, 0.05]` | Unused: the EKF fuses only the twist |
+| `twist_covariance_diagonal` | `[0.01, 0.05, 1e+6, 1e+6, 1e+6, 0.5]` | How much the EKF should trust each velocity channel |
 
-Three notes on those values.
+Notes on those values.
 
 **`counts_per_rev` is per wheel revolution, not per motor revolution.** The
 encoder is on the motor shaft before the 51:1 gearbox, and quadrature decoding
@@ -152,6 +158,42 @@ them. The real values are x, y and yaw.
 reads `1e6` as a float either way, but strict YAML 1.1, which PyYAML
 implements, requires a signed exponent and otherwise parses it as a *string*.
 Any Python tooling that reads these configs would silently get `'1e6'`.)
+
+**`yaw_scale` corrects a bias the geometric model cannot see.** The forward
+kinematics divide by `4·L` with `L = (wheelbase + track_width)/2 = 0.275 m`.
+Mecanum rollers slip laterally during rotation, so the *effective* lever arm is
+shorter than the geometric one, and because `dθ` is inversely proportional to
+`L`, a shorter true `L` means the model **under-reports** yaw.
+
+Measured over three in-place spin windows against the ZED gyro, de-biased by its
+own measured -0.1355 deg/s stationary offset:
+
+| Window | Duration | wheel / truth |
+|---|---|---|
+| seg8 | 25.4 s | 0.9687 |
+| seg9 | 66.1 s | 0.9702 |
+| spin2 | 99.7 s | 0.9670 |
+| **mean** | | **0.9686** (spread ±0.0016) |
+
+`yaw_scale = 1/0.9686 = 1.032`, implying an effective lever arm of 0.2664 m.
+Over a 1335 deg spin that removed 44 deg of yaw error. It was calibrated during
+**pure in-place rotation only**, so it is one scalar standing in for what is
+really a motion-dependent effect. Set it back to 1.0 to disable, without
+touching the geometry.
+
+**The twist `vyaw` variance is 0.5, ten times the pose one.** This is not a
+typo, and only the twist entry is read, since the EKF fuses indices 6, 7 and 11
+(velocities only). On a mecanum base, yaw from wheel encoders is the worst
+possible yaw source: it comes from encoder differences over a lever arm the
+rollers make uncertain, and the resulting error is a **scale bias**, which does
+not average out, it integrates. Covariance handles noise; it cannot handle bias.
+
+Measured on `rtabmap_20260825_150118.db`: over a 16.8 m loop with 1311 deg of
+rotation, the fused odometry accumulated 37 deg of yaw error against a LiDAR
+scan-alignment ground truth of +2.0 deg and 5 cm. Raising the wheels' `vyaw`
+from 0.05 to 0.5 moved the ZED-to-wheel yaw weighting from 5:1 to 50:1: the VIO
+owns yaw, and the wheels remain a graceful fallback if the camera drops out.
+`yaw_scale` above is the actual fix for the bias; this is the mitigation.
 
 **`y` is deliberately 5× `x`.** Both are observable on a mecanum rover, but they
 are not equally trustworthy. Lateral motion is produced entirely by the free
@@ -247,9 +289,14 @@ a hard floor; ~10 % means a wrong constant, not slip.
 ### Step 3: rotation scale (on the ground)
 
 Rotate the rover in place through a known angle (360° is easiest to judge by
-eye) and compare the yaw in `/wheel/odometry`. If reported rotation is too
-large, `L` is too small: increase `wheelbase` and/or `track_width`. Adjust these
-only after step 2 passes, since linear scale error feeds into rotation error.
+eye) and compare the yaw in `/wheel/odometry`. Correct the result with
+**`yaw_scale`**, not the geometry: set it to `actual / reported`. The geometry
+constants are shared with two other packages, so changing them to absorb a
+rotation error corrupts the RoboClaw driver's velocity conversion too.
+
+Do this only after step 2 passes, since linear scale error feeds into rotation
+error. The current 1.032 came from three spin windows against the ZED gyro; the
+better reference now that slam_toolbox processes rotation is `map → odom`.
 
 ---
 

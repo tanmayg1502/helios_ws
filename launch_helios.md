@@ -157,7 +157,7 @@ This one launch file starts six things:
 |---|---|
 | `robot_state_publisher` (helios_description) | `base_link` and every frame below it |
 | `wheel_odometry_node` | `/wheel/odometry` |
-| ZED 2i wrapper | RGB-D, `/zed/zed_node/odom`, IMU |
+| ZED 2i wrapper | RGB-D at 30 Hz, `/zed/zed_node/odom`, IMU |
 | `zed_odom_covariance_node` | `/zed/odom_with_cov` |
 | Hokuyo `urg_node2` | `/scan` |
 | `ekf_filter_node` | `/odometry/filtered` + TF `odom -> base_link` |
@@ -218,7 +218,7 @@ transform, which shows up as the robot appearing in two places in RViz.
 |---|---|
 | Build a 2D floor plan | `ros2 launch mapping_localization_pkg slam_toolbox.launch.py` |
 | Build a 3D coloured map | `ros2 launch mapping_localization_pkg rtabmap.launch.py` |
-| Reuse a saved 2D map | `ros2 launch mapping_localization_pkg amcl_localization.launch.py map:=<path>.yaml` |
+| Reuse a saved 2D map | `ros2 launch mapping_localization_pkg amcl_localization.launch.py map:=<path>.yaml` (self-relocalizes; add `recovery:=false` to disable) |
 
 **The one documented exception:** `rtabmap.launch.py` defaults to
 `publish_tf_map:=false`, so it can run *alongside* slam_toolbox to evaluate 3D
@@ -285,6 +285,30 @@ stationary rover never converges. Watch `/particlecloud` tighten as it goes.
 
 Heading is less forgiving than position: the default yaw spread is about
 ±0.5 rad. Half a metre off recovers; 90° off usually does not.
+
+**You normally do not have to do any of the above.** `amcl_recovery` starts
+with AMCL and re-localizes the rover by itself, at startup and whenever it goes
+lost later. It spins, then drives short legs picked from Nav2's local costmap,
+until the particle cloud tightens.
+
+It also notices being **picked up and carried**: wheels still while the camera
+reports motion is a signature nothing else produces, and it recovers once the
+rover is set back down.
+
+It needs **terminal 5 (Nav2) running**, since the local costmap and the
+spin / drive_on_heading behaviors live there. Without Nav2 it stays passive and
+the manual pose estimate above is still how you do it.
+
+**The rover drives itself with no deadman.** To stop it, or to force it:
+
+```bash
+ros2 service call /amcl_recovery/abort std_srvs/srv/Trigger
+ros2 service call /amcl_recovery/relocalize std_srvs/srv/Trigger
+```
+
+Turn it off with `recovery:=false` on the AMCL launch, or `enabled: false`
+under `amcl_recovery` in `amcl.yaml`. Details in the
+[`mapping_localization_pkg` README](src/mapping_localization_pkg/README.md).
 
 ---
 
@@ -426,6 +450,11 @@ pgrep -a -f "ros2 launch|roboclaw_driver_node|zed" || echo "clean"
 | RTAB-Map drops frames, patchy map | Jetson overloaded | Turn off `rtabmap_viz`. Consider running RViz on a laptop instead |
 | `/map` never publishes | slam_toolbox processed zero scans | It gates on translation, not rotation. Drive forward, do not only spin |
 | Map is skewed after a loop | Odometry yaw drift | See `wheel_odometry.yaml`'s `yaw_scale` note |
+| Rover never self-relocalizes | Nav2 not running, or AMCL not active | `amcl_recovery` needs `/local_costmap/costmap` plus the `spin` and `drive_on_heading` servers, and polls `/amcl/get_state` before acting |
+| Rover drives off on its own after launch | `amcl_recovery` doing its job | Expected. `ros2 service call /amcl_recovery/abort std_srvs/srv/Trigger`, or launch with `recovery:=false` |
+| Map smears / walls double while turning | `transform_time_offset` too large | It is lag, not extrapolation. Keep it at 0.02 in `ekf.yaml` |
+| `rviz2` over SSH: `qt.qpa.xcb: could not connect to display` | No X display on the SSH session | `ssh -X` (or `-Y`) from the laptop, or run RViz on the Jetson's own monitor. RViz on the Jetson also costs CPU the ZED needs |
+| RTAB-Map cloud full of stray points in mid-air | Export filtering is off | Stereo flying pixels. Enable the radius outlier filter in `~/.ros/rtabmapGUI.ini` before exporting |
 
 ---
 

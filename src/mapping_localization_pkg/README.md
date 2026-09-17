@@ -99,10 +99,14 @@ rtabmap/
                                   to _cloud.ply. Neither is automatic.
   maps/                           Run databases. Contents gitignored.
 localization/
-  launch/amcl_localization.launch.py  AMCL over an already-built map.
-  config/amcl.yaml                Particle filter + motion model tuning.
-CMakeLists.txt                    Installs launch/, config/, rviz/, not maps/
-                                  and not scripts/.
+  launch/amcl_localization.launch.py  AMCL + auto-recovery over a saved map.
+  config/amcl.yaml                Particle filter, motion model, and the
+                                  recovery node's thresholds and limits.
+  amcl_recovery.py                The maths. Costmap ray casting, heading
+                                  choice, convergence test. No ROS.
+  amcl_recovery_node.py           Thin ROS adapter around it.
+CMakeLists.txt                    Installs launch/, config/, rviz/ and the two
+                                  recovery files; not maps/, not scripts/.
 package.xml                       Metadata and dependencies.
 ```
 
@@ -117,10 +121,14 @@ The three folders answer different questions:
 Only **one** of them may run at a time, because all three publish `map → odom`
 and would fight over it.
 
-There is no source code in this package. Both mappers are third-party ROS
-packages; what lives here is the configuration and launch wiring that makes them
-work with *this* robot. That is deliberate: the algorithms are well-tested
+**Almost no source code lives here.** Both mappers are third-party ROS packages,
+and what this package holds is the configuration and launch wiring that makes
+them work with *this* robot. That is deliberate: the algorithms are well-tested
 upstream, and the value is in the integration.
+
+The one exception is `localization/amcl_recovery*.py`, which closes a loop no
+upstream node closes: local costmap in, AMCL covariance out, Nav2 behaviors in
+between.
 
 ### `CMakeLists.txt`
 
@@ -179,8 +187,9 @@ The values that matter most day to day:
 | `resolution` | 0.05 | Map cell size, metres. 5 cm per pixel |
 | `max_laser_range` | 10.0 | Matches the UST-10LX's usable range |
 | `map_update_interval` | 2.0 | Seconds between published map updates |
-| `minimum_travel_distance` | 0.2 | Metres of motion before a new scan is added |
-| `minimum_travel_heading` | 0.2 | Radians, same idea |
+| `minimum_travel_distance` | 0.05 | Metres of motion before a new scan is processed |
+| `minimum_travel_heading` | 0.2 | Radians of rotation before a node is added |
+| `minimum_time_interval` | 0.2 | Seconds, a floor on the gap between processed scans |
 | `transform_timeout` | 0.5 | How long to wait for a transform |
 | `scan_queue_size` | 20 | Scans buffered while waiting for transforms |
 | `do_loop_closing` | true | Enable drift correction on revisit |
@@ -188,10 +197,16 @@ The values that matter most day to day:
 
 Three notes.
 
-**The `minimum_travel_*` values decide map density.** Scans are only added after
-the robot has moved this far, which prevents thousands of near-identical scans
-piling up while it sits still. Lower them for finer detail in tight spaces at
-the cost of more computation.
+**The `minimum_travel_*` values decide map density,** and one of them has a trap
+in it. Scans are only processed after the robot has moved this far, which
+prevents thousands of near-identical scans piling up while it sits still.
+
+`minimum_travel_distance` gates on **translation only**. At the upstream default
+of 0.2 m, a rover rotating in place moved zero metres, processed zero scans, and
+left `map -> odom` bit-frozen for the whole turn. Nothing errors: `/map` simply
+stops updating and any drift measured across a spin reads 0.00 because it was
+never measured. It is 0.05 here for that reason. `minimum_time_interval: 0.2`
+is what keeps the cost bounded now that the distance gate is loose.
 
 **`scan_queue_size: 20` was a fix, not a default.** The symptom was
 `Message Filter dropping message: frame 'laser' ... queue is full` in the log.
@@ -357,11 +372,17 @@ on a single-plane Hokuyo sweep observes x, y and yaw only). Meanwhile the visual
 loop closures are full 6-DoF and keep asserting real roll and pitch. The
 optimizer splits the difference and the clouds fan out.
 
-**`Mem/SaveDepth16Format true`.** The depth topic is 32-bit float, which `.rvl`
-cannot carry, so every frame silently fell back to PNG. That is why
-`Compressing_data` measured 37% of total frame time and a 448-node run wrote
-1074 MB (2.4 MB/node). The cost is dropping depth beyond 65 m, meaningless on a
-0.120 m stereo baseline indoors where depth degrades past ~15 m.
+**`Mem/SaveDepth16Format true`, paired with the camera's `openni_depth_mode`.**
+The ZED's default depth topic is 32-bit float, which `.rvl` cannot carry, so
+every frame silently fell back to PNG. That is why `Compressing_data` measured
+37% of total frame time and a 448-node run wrote 1074 MB (2.4 MB/node). Setting
+this alone fixed the storage (2.40 -> 0.79 MB/node) but left RTAB-Map converting
+every incoming frame and logging *"depth type detected is 32FC1, use 16UC1 depth
+format to avoid this conversion"*. `zed_custom_tuning` now sets
+`depth.openni_depth_mode: true` so the wrapper publishes 16UC1 millimetres
+directly and no conversion happens. Both settings must stay together. The cost
+is 1 mm quantisation and a 65.535 m ceiling, meaningless on a 0.120 m stereo
+baseline indoors where depth degrades past ~15 m.
 
 **`rgbd_sync` is what fixes `Not enough inliers 0/20 (matches=94)`.** Zero
 inliers from ~90 matches means RANSAC found no camera pose consistent with any
@@ -453,6 +474,15 @@ Run it twice with the same name to get both. `--db <path>` picks a specific
 database instead of the newest in `maps/`. Output lands in `rtabmap/maps/` as
 `rtabmap_<name>.{pgm,yaml}` and `rtabmap_<name>_cloud.ply`.
 
+> **Check the export filter settings before trusting a cloud.** The `.ply` export
+> reads its parameters from `~/.ros/rtabmapGUI.ini`, not from anything in this
+> repo, and that file ships with every filter off (`filtering=false`,
+> `filtering_radius=0`, `subtract=false`, `bilateral=false`). Stereo produces
+> flying pixels at every depth discontinuity, so an unfiltered export carries all
+> of them: measured, the radius-outlier filter took stray points from 2.23% of
+> the cloud down to 0.11%, a 20x difference. Range is not the lever here, and was
+> tested: 4 m gave 0.11%, 3 m 0.09%, 2.5 m 0.11%. The filter is.
+
 ### Do not run `rtabmap_viz` live
 
 `rtabmap_viz:=true` pushes the Jetson past real time and makes RTAB-Map discard
@@ -487,8 +517,8 @@ ros2 launch mapping_localization_pkg amcl_localization.launch.py \
     rviz:=true
 ```
 
-This starts three nodes. `nav2_bringup` is **not** installed on this machine
-and is not required; the launch file wires them up itself:
+This starts three nodes. `nav2_bringup` is **not required**: the launch file
+wires them up itself, so localization works whether or not it is installed.
 
 | Node | Job |
 |---|---|
@@ -520,8 +550,156 @@ AMCL only runs a filter update after `update_min_d` (0.20 m) or `update_min_a`
 (0.20 rad) of motion. **A stationary rover never converges.** Drive a few
 metres past distinctive geometry and watch `/particlecloud` tighten in RViz.
 
-Teleop is the normal way to do this. Pushing the rover by hand works just as
+Teleop is the normal way to do this by hand. Pushing the rover works just as
 well: AMCL reads odometry, not commands.
+
+**You normally do not have to.** `amcl_recovery` starts with AMCL and does all
+of the above by itself, including the very first convergence at startup. See
+[It re-localizes itself](#it-re-localizes-itself) below.
+
+### It re-localizes itself
+
+`amcl_recovery` starts with AMCL and needs no trigger. It watches AMCL's
+reported covariance and, when the rover has been lost for long enough, drives it
+until the particle cloud tightens again. No RViz click, no teleop, no service
+call.
+
+Two independent detectors decide the rover needs help:
+
+| Detector | Fires on | Catches |
+|---|---|---|
+| **Covariance** | position std > 0.60 m or yaw std > 0.40 rad, held 5 s | Gradual divergence, and startup with no pose |
+| **Lift** | wheels still while the camera reports motion, held 1 s | Being picked up and carried |
+
+```
+   covariance bad for lost_confirm_time (5 s)
+   or no /amcl_pose at all for pose_timeout (30 s)
+   or carried, then set down
+            |
+            v
+   +---> survey: spin 360 deg in place
+   |        |
+   |        v
+   |    converged?  --yes-->  back to monitoring
+   |        | no
+   |        v
+   |    rank 36 headings by clearance in the LOCAL costmap
+   |        |
+   |        v
+   |    turn onto the best one, drive one leg
+   |        |
+   +--------+   until max_legs, then escalate
+                        |
+                        v
+              scatter globally, explore again
+                        |
+                        v
+              still lost: wait out the cooldown, retry
+```
+
+### Why two detectors
+
+The covariance test needs AMCL to *notice* it is lost. That needs a filter
+update, which AMCL only runs after 0.20 m or 0.20 rad of odometry motion. Pick
+the rover up and the wheels report nothing, so whether AMCL ever notices comes
+down to the ZED tracking the carry.
+
+The EKF helps here by accident. Carrying the rover, the wheels insist on zero
+while the camera reports real motion, and inverse-variance weighting
+(`0.01` against `0.02`) lands the fused estimate at roughly **a third** of true
+carrying speed. Carrying it 3 m still registers ~1 m, well past the 0.20 m
+threshold, so AMCL usually does update and its covariance does blow up.
+
+**Usually** is the problem. Cover the lens, carry it through a dark stretch, or
+move it fast enough to blur, and the ZED loses tracking, no update happens, and
+the last `/amcl_pose` still reads converged. The kidnap is invisible.
+
+The lift detector does not depend on AMCL at all. Wheels still + camera moving
+is a signature nothing in normal operation produces:
+
+| Situation | wheels | camera | Lift? |
+|---|---|---|---|
+| Parked | 0.000 | 0.00002 | no |
+| Driving | 0.300 | 0.310 | no |
+| Mecanum roller slip | 0.300 | 0.291 | no |
+| Wheels spinning on a slick floor | 0.300 | 0.000 | no |
+| **Carried** | **0.005** | **0.600** | **yes** |
+
+Roller slip cannot reach it: slip is a scale error on a *turning* wheel
+(measured 0.9686 of truth), not a still wheel under real motion.
+
+It triggers on **touchdown**, not on the lift. Recovering while still in the air
+would spin the wheels in someone's hands.
+
+Still not caught: lifting the rover with the camera covered *and* the wheels
+still. Nothing on the robot sees that; it would need the IMU.
+
+**Exploring comes before scattering, deliberately.** AMCL's own
+`recovery_alpha_slow` / `recovery_alpha_fast` injection is the designed
+mechanism for recovering a lost filter, and it only acts when the robot moves.
+A global scatter throws away whatever partial information AMCL still holds, so
+it is the second resort, not the first.
+
+**Why the local costmap is safe to steer by while lost.** It is built in the
+`odom` frame from the live laser, and its layers never consult `/map`:
+
+| | Global costmap | Local costmap |
+|---|---|---|
+| Frame | `map` | `odom` |
+| Layers | static + obstacle + inflation | obstacle + inflation |
+| Reads `/map` | yes | **no** |
+| Valid while AMCL is wrong | no | **yes** |
+
+So the obstacle picture stays correct no matter how wrong the pose estimate is.
+Steering by the global costmap would drive into walls it believes are elsewhere.
+
+**Collision checking is Nav2's, not ours.** The node drives through the `spin`
+and `drive_on_heading` actions on the behavior server, which already simulate
+`simulate_ahead_time` (2.0 s) of motion against the local costmap and abort with
+`COLLISION_AHEAD`. No new `/cmd_vel` publisher is introduced.
+
+> **It needs Nav2 running.** Both the local costmap and those behaviors live
+> there. Without Nav2 the node stays passive and logs why, so AMCL alone still
+> works exactly as it did, with the RViz pose estimate.
+
+| Parameter | Value | What it controls |
+|---|---|---|
+| `enabled` | `true` | `false` disables recovery without unwiring the node |
+| `lost_position_std` | 0.60 m | Above this counts as lost |
+| `lost_yaw_std` | 0.40 rad | Same for heading |
+| `lost_confirm_time` | 5.0 s | How long it must stay lost before recovery starts |
+| `pose_timeout` | 30.0 s | Silence from `/amcl_pose` that also counts as lost |
+| `max_position_std` | 0.25 m | Tighter exit threshold, so it cannot oscillate |
+| `max_yaw_std` | 0.15 rad | Same |
+| `cooldown` | 30.0 s | Minimum gap between attempts |
+| `lift_detection_enabled` | `true` | The second detector |
+| `lift_max_wheel_speed` | 0.02 m/s | Wheels at or below this count as stationary |
+| `lift_min_visual_speed` | 0.15 m/s | Camera must claim at least this much |
+| `lift_confirm_time` | 1.0 s | Disagreement held this long counts as a lift |
+| `leg_distance` | 1.5 m | Distance driven per leg |
+| `leg_speed` | 0.2 m/s | Half the `roboclaw.yaml` ceiling |
+| `safety_margin` | 0.45 m | Clearance needed beyond `leg_distance`. Matches `inflation_radius` |
+| `retrace_penalty` | 1.5 m | Stops it ping-ponging along one corridor |
+
+Entering recovery uses the loose `lost_*` thresholds and leaving it uses the
+tight `max_*` ones. That hysteresis is what stops a pose hovering near one value
+from flapping the node in and out.
+
+**Rotation counts.** AMCL gates its filter updates on translation **or**
+rotation (`update_min_d` 0.20 m, `update_min_a` 0.20 rad), so the survey spin
+does drive updates. This is the opposite of slam_toolbox, which gates on
+translation only and processes nothing during an in-place turn.
+
+Translation is still what collapses a scattered cloud: different particle
+hypotheses predict different scan changes as the rover moves, and only motion
+across the map distinguishes them. The spin mostly resolves heading and fills
+the 90 deg the 270 deg Hokuyo cannot see at rest.
+
+> **The rover drives itself, with no deadman.** Two manual overrides exist:
+> `ros2 service call /amcl_recovery/abort std_srvs/srv/Trigger` cancels a
+> running recovery, and `/amcl_recovery/relocalize` forces one to start.
+> `recovery:=false` on the launch file, or `enabled: false` in `amcl.yaml`,
+> turns it off entirely.
 
 ### Why `OmniMotionModel`
 
@@ -546,6 +724,10 @@ colcon build --packages-select mapping_localization_pkg --symlink-install
 source install/setup.bash
 ```
 
+`amcl_recovery_node` and its `amcl_recovery.py` both install into
+`lib/mapping_localization_pkg/`. Python puts a script's own directory first on
+`sys.path`, so the node imports its sibling with no package machinery.
+
 Needs both mappers plus the nav2 localization pieces installed:
 
 ```bash
@@ -554,9 +736,11 @@ sudo apt install ros-jazzy-slam-toolbox ros-jazzy-rtabmap-ros \
                  ros-jazzy-nav2-lifecycle-manager
 ```
 
-`ros-jazzy-nav2-bringup` is deliberately **not** required:
+`ros-jazzy-nav2-bringup` is deliberately **not** required.
 `amcl_localization.launch.py` starts `map_server`, `amcl` and
-`lifecycle_manager` itself, so the localization stack works without it.
+`lifecycle_manager` itself, and `navigation_pkg` does the same for the
+navigation servers. It happens to be installed on this machine as a dependency
+of other nav2 packages; nothing here launches it.
 
 ---
 
@@ -703,3 +887,5 @@ rather than `install/` so they survive rebuilds.
   layer
 - [`helios_description`](../helios_description/README.md): sensor mount offsets,
   which directly affect map quality
+- [`navigation_pkg`](../navigation_pkg/README.md): consumes `/map` and the
+  `map -> odom` this layer publishes
