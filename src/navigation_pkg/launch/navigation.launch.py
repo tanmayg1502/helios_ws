@@ -32,15 +32,27 @@ from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-# Order matters: lifecycle_manager transitions these in sequence, and each one
-# must be up before the next needs it. The controller and planner own the
-# costmaps they carry, so they come before the navigator that calls them.
+# Order matters: lifecycle_manager transitions these in sequence and STOPS at the
+# first one that will not activate, leaving everything after it inactive.
+#
+# planner_server is therefore last of the movement-capable nodes. It carries the
+# GLOBAL costmap, which blocks on map -> odom, so it cannot activate until
+# something has localized the robot. Put it earlier and it takes the behaviors
+# down with it: amcl_recovery then cannot drive the rover to localize it, and
+# nothing ever localizes, which is a deadlock the robot cannot leave on its own.
+#
+# Verified live: behavior_server activates cleanly with no map -> odom at all.
+# It declares global_frame: map but Spin and DriveOnHeading both work in
+# local_frame: odom, so it never needs the map edge.
+#
+# Everything before planner_server needs only odom -> base_link, which the EKF
+# publishes from the moment the sensors are up.
 LIFECYCLE_NODES = [
     "controller_server",
-    "planner_server",
     "behavior_server",
-    "bt_navigator",
     "velocity_smoother",
+    "bt_navigator",
+    "planner_server",
 ]
 
 

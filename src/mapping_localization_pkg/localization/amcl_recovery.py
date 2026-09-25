@@ -306,3 +306,31 @@ def is_lift_event(
         True while the two disagree by more than those thresholds allow.
     """
     return wheel_speed <= max_wheel_speed and visual_speed >= min_visual_speed
+
+
+def is_traction_loss(
+    wheel_speed: float,
+    visual_speed: float,
+    min_wheel_speed: float,
+    max_visual_speed: float,
+) -> bool:
+    """Decide whether the wheels are turning while the body stays put.
+
+    The mirror image of `is_lift_event`, and the one that applies while the
+    rover is under command. Lifting a DRIVING rover does not look like a lift:
+    the wheels spin freely in the air and report plenty of motion, so the
+    wheels-still test cannot fire. What gives it away is the body not moving.
+
+    Also catches a total loss of traction on the ground, which warrants the
+    same response: stop, because the odometry being fed to AMCL is fiction.
+
+    Args:
+        wheel_speed: Body speed from the wheel encoders, in m/s.
+        visual_speed: Body speed from the ZED's visual-inertial odometry, m/s.
+        min_wheel_speed: The wheels must claim at least this much, in m/s.
+        max_visual_speed: Body speeds at or below this count as not moving, m/s.
+
+    Returns:
+        True while the wheels claim motion the camera cannot see.
+    """
+    return wheel_speed >= min_wheel_speed and visual_speed <= max_visual_speed

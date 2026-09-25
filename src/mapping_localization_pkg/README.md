@@ -540,9 +540,18 @@ Heading is far less forgiving than position. The default yaw spread is only
 about ±0.5 rad, so a position off by half a metre recovers, while a heading off
 by 90° usually does not.
 
-`set_initial_pose: false` in `config/amcl.yaml` is what makes "start anywhere"
-work. Set it `true`, and fill in `initial_pose`, only if the rover genuinely
-always starts from the same spot.
+`set_initial_pose: true` in `config/amcl.yaml` is **not** a claim that the rover
+starts at the origin. It exists so `map -> odom` is published from the moment
+AMCL activates, because without that transform the global costmap blocks,
+`lifecycle_manager` aborts the Nav2 bringup, and it never retries, leaving
+`planner_server` inactive forever.
+
+`nav2_amcl` has no `initial_cov_*` parameter, so that seed comes with a
+near-zero covariance: AMCL reports a tight cloud it has no evidence for.
+`amcl_recovery`'s `scatter_on_startup` immediately replaces it with honest
+uncertainty, which keeps the transform published while making the covariance
+real. Set `scatter_on_startup: false` to trust the pose saved from the previous
+session instead.
 
 ### Then drive
 
@@ -564,15 +573,18 @@ reported covariance and, when the rover has been lost for long enough, drives it
 until the particle cloud tightens again. No RViz click, no teleop, no service
 call.
 
-Two independent detectors decide the rover needs help:
+It starts by discarding the pose it was seeded with, then watches two
+independent detectors:
 
-| Detector | Fires on | Catches |
+| Trigger | Fires on | Catches |
 |---|---|---|
+| **Cold start** | first cycle after AMCL and Nav2 are both up | The seeded pose, which is invented |
 | **Covariance** | position std > 0.60 m or yaw std > 0.40 rad, held 5 s | Gradual divergence, and startup with no pose |
 | **Lift** | wheels still while the camera reports motion, held 1 s | Being picked up and carried |
 
 ```
-   covariance bad for lost_confirm_time (5 s)
+   cold start (seeded pose is not evidence)
+   or covariance bad for lost_confirm_time (5 s)
    or no /amcl_pose at all for pose_timeout (30 s)
    or carried, then set down
             |
@@ -634,11 +646,14 @@ would spin the wheels in someone's hands.
 Still not caught: lifting the rover with the camera covered *and* the wheels
 still. Nothing on the robot sees that; it would need the IMU.
 
-**Exploring comes before scattering, deliberately.** AMCL's own
+**Exploring comes before scattering, except on a cold start.** AMCL's own
 `recovery_alpha_slow` / `recovery_alpha_fast` injection is the designed
 mechanism for recovering a lost filter, and it only acts when the robot moves.
 A global scatter throws away whatever partial information AMCL still holds, so
-it is the second resort, not the first.
+for a rover that was localized and then got lost it is the second resort.
+
+At startup there is nothing to preserve: the pose is a seed, not a measurement.
+That case scatters first, then explores.
 
 **Why the local costmap is safe to steer by while lost.** It is built in the
 `odom` frame from the live laser, and its layers never consult `/map`:
@@ -672,6 +687,7 @@ and `drive_on_heading` actions on the behavior server, which already simulate
 | `max_position_std` | 0.25 m | Tighter exit threshold, so it cannot oscillate |
 | `max_yaw_std` | 0.15 rad | Same |
 | `cooldown` | 30.0 s | Minimum gap between attempts |
+| `scatter_on_startup` | `true` | Discard the seeded pose once, at startup |
 | `lift_detection_enabled` | `true` | The second detector |
 | `lift_max_wheel_speed` | 0.02 m/s | Wheels at or below this count as stationary |
 | `lift_min_visual_speed` | 0.15 m/s | Camera must claim at least this much |

@@ -450,6 +450,7 @@ pgrep -a -f "ros2 launch|roboclaw_driver_node|zed" || echo "clean"
 | RTAB-Map drops frames, patchy map | Jetson overloaded | Turn off `rtabmap_viz`. Consider running RViz on a laptop instead |
 | `/map` never publishes | slam_toolbox processed zero scans | It gates on translation, not rotation. Drive forward, do not only spin |
 | Map is skewed after a loop | Odometry yaw drift | See `wheel_odometry.yaml`'s `yaw_scale` note |
+| `planner_server` stuck inactive | It blocks on `map -> odom`. Everything else still activates by design | Expected until AMCL localizes. Planning needs it; driving does not |
 | Rover never self-relocalizes | Nav2 not running, or AMCL not active | `amcl_recovery` needs `/local_costmap/costmap` plus the `spin` and `drive_on_heading` servers, and polls `/amcl/get_state` before acting |
 | Rover drives off on its own after launch | `amcl_recovery` doing its job | Expected. `ros2 service call /amcl_recovery/abort std_srvs/srv/Trigger`, or launch with `recovery:=false` |
 | Map smears / walls double while turning | `transform_time_offset` too large | It is lag, not extrapolation. Keep it at 0.02 in `ekf.yaml` |

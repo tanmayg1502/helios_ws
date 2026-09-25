@@ -92,6 +92,24 @@ the lifecycle manager:
 | `velocity_smoother` | Ramps `/cmd_vel_nav` into `/cmd_vel` |
 | `lifecycle_manager_navigation` | Drives all five configure to activate |
 
+**Activation order matters and is not alphabetical.** The manager transitions
+nodes in sequence and stops at the first one that will not activate, leaving
+everything after it inactive, and it never retries.
+
+```
+controller_server   ┐
+behavior_server     │ need only odom -> base_link, from the EKF
+velocity_smoother   │
+bt_navigator        ┘
+planner_server      <- carries the GLOBAL costmap: blocks on map -> odom
+```
+
+`planner_server` is therefore last. Put it earlier and a rover that is not yet
+localized loses the behaviors too, which is what `amcl_recovery` drives through
+to localize itself: a deadlock the robot cannot leave unaided. Verified live
+that `behavior_server` activates with no `map -> odom` at all, because `Spin`
+and `DriveOnHeading` both work in `local_frame: odom`.
+
 Omitted: `smoother_server`, `waypoint_follower`, `docking_server`,
 `collision_monitor`. Nothing uses them yet, and this Jetson already runs the ZED
 at around 155% CPU. Add them when there is a reason.
@@ -141,6 +159,7 @@ first, then mirror it here.
 | `vx_max` / `vy_max` / `wz_max` | 0.40 m/s, 0.40 m/s, 0.80 rad/s | Matches `roboclaw.yaml` ceilings |
 | `max_accel` | 0.80 m/s² | `drive_accel` 5000 counts/s² is ~0.98 m/s² |
 | `resolution` | 0.05 m/cell | Matches `slam_toolbox.yaml` |
+| `always_send_full_costmap` | `true` (local) | Nav2's default sends the full grid once and only increments after, so a node subscribing later gets nothing at all |
 
 A rectangular footprint is used rather than `robot_radius` because a
 circumscribing circle on this base is 0.27 m and would refuse gaps the rover

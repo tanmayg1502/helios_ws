@@ -107,9 +107,16 @@ amcl:
     # only about +-0.5 rad, so point the arrow the way the rover actually
     # faces. A position that is off by half a metre recovers; a heading that
     # is off by 90 deg usually does not.
-    set_initial_pose: false
-    always_reset_initial_pose: false   # true discards the saved pose on every start
-    # initial_pose: {x: 0.0, y: 0.0, z: 0.0, yaw: 0.0}
+    # true so that map -> odom exists from startup. Without it AMCL publishes no
+    # transform until someone sets a pose, the global costmap blocks, and
+    # lifecycle_manager aborts the Nav2 bringup WITHOUT ever retrying, leaving
+    # planner_server inactive forever. nav2_amcl has no initial_cov_* parameter,
+    # so this seeds a near-zero covariance: AMCL reports a tight cloud it has no
+    # evidence for. amcl_recovery's scatter_on_startup replaces it with honest
+    # uncertainty immediately afterwards.
+    set_initial_pose: true
+    always_reset_initial_pose: false   # false reuses the saved pose over initial_pose
+    initial_pose: {x: 0.0, y: 0.0, z: 0.0, yaw: 0.0}   # m and rad, in the map frame
 
     # Keep the last pose across a restart, so a re-launch in the same spot
     # does not need the RViz click again.
@@ -148,6 +155,15 @@ amcl_recovery:
     cooldown: 30.0           # s before another attempt may start
     monitor_period: 1.0      # s between checks
 
+    # Discard AMCL's seeded pose once, as soon as the prerequisites are up.
+    # set_initial_pose above exists only to give Nav2 a transform to activate
+    # against; the pose itself is invented and carries a near-zero covariance,
+    # so without this the rover sits confidently wrong and no detector fires.
+    # Scattering keeps map -> odom published while making the uncertainty real.
+    # Set false to trust the saved pose from the previous session instead, for
+    # example when the rover always restarts where it shut down.
+    scatter_on_startup: true
+
     # --- Kidnap detection ----------------------------------------------------
     # Second, independent detector. The covariance test above needs AMCL to
     # NOTICE it is lost, which needs a filter update, which needs the EKF to
@@ -169,6 +185,15 @@ amcl_recovery:
     # disagreement. Comfortably above the ~2e-5 m/s the ZED reports parked.
     lift_min_visual_speed: 0.15  # m/s
     lift_confirm_time: 1.0       # s of disagreement before it counts as a lift
+
+    # The mirror test, used while the rover is UNDER COMMAND. Lifting a driving
+    # rover does not look like a lift: the wheels spin freely in the air and
+    # report plenty of motion, so the wheels-still test above cannot fire. What
+    # shows instead is the body not moving. Also catches a total loss of
+    # traction, which deserves the same response because the odometry AMCL is
+    # being fed is fiction either way.
+    slip_min_wheel_speed: 0.12   # m/s the wheels must claim
+    slip_max_visual_speed: 0.03  # m/s at or below which the body is not moving
 
     # --- When has it recovered -----------------------------------------------
     max_position_std: 0.25   # m, per-axis x and y standard deviation

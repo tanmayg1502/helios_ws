@@ -259,6 +259,12 @@ local_costmap:
     ros__parameters:
       update_frequency: 5.0           # Hz
       publish_frequency: 2.0          # Hz
+      # Publish the whole grid every cycle, not just the first one. Nav2's
+      # default sends the full costmap once and only incremental updates after,
+      # so any node subscribing later (amcl_recovery, a debug tool) receives
+      # nothing at all and waits forever. 80x80 cells at 2 Hz is ~13 kB/s.
+      # Read at configure time, so changing it needs a relaunch, not a param set.
+      always_send_full_costmap: true
       global_frame: odom              # odom, not map: the local window must not jump
       robot_base_frame: base_link
       rolling_window: true

@@ -21,6 +21,7 @@ action clients and message conversion only.
 from __future__ import annotations
 
 import math
+import signal
 import time
 from collections.abc import Callable
 from enum import Enum, auto
@@ -37,6 +38,7 @@ from amcl_recovery import (
     choose_heading,
     is_converged,
     is_lift_event,
+    is_traction_loss,
     rank_headings,
     wrap_angle,
 )
@@ -47,8 +49,10 @@ from nav2_msgs.action import DriveOnHeading, Spin
 from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.action import ActionClient
 from rclpy.action.client import ClientGoalHandle
+from rclpy.client import Client
 from rclpy.duration import Duration
 from rclpy.node import Node
+from rclpy.signals import SignalHandlerOptions
 from rclpy.task import Future
 from std_srvs.srv import Empty, Trigger
 
@@ -65,6 +69,12 @@ SHUTDOWN_CANCEL_TIMEOUT: float = 3.0
 # action_msgs/GoalStatus.STATUS_SUCCEEDED. Imported as a literal to keep the
 # dependency list to message packages this node already needs.
 STATUS_SUCCEEDED: int = 4
+
+# Both behaviors abort with their own COLLISION_AHEAD code when the path they
+# simulated is blocked. That is the collision check working, not a fault.
+COLLISION_CODES: frozenset[int] = frozenset(
+    {Spin.Result.COLLISION_AHEAD, DriveOnHeading.Result.COLLISION_AHEAD}
+)
 
 
 class State(Enum):
@@ -93,12 +103,15 @@ class AmclRecoveryNode(Node):
         self.declare_parameter("lost_confirm_time", 5.0)
         self.declare_parameter("pose_timeout", 30.0)
         self.declare_parameter("cooldown", 30.0)
+        self.declare_parameter("scatter_on_startup", True)
         self.declare_parameter("lift_detection_enabled", True)
         self.declare_parameter("wheel_odom_topic", "/wheel/odometry")
         self.declare_parameter("visual_odom_topic", "/zed/odom_with_cov")
         self.declare_parameter("lift_max_wheel_speed", 0.02)
         self.declare_parameter("lift_min_visual_speed", 0.15)
         self.declare_parameter("lift_confirm_time", 1.0)
+        self.declare_parameter("slip_min_wheel_speed", 0.12)
+        self.declare_parameter("slip_max_visual_speed", 0.03)
         self.declare_parameter("monitor_period", 1.0)
         self.declare_parameter("max_legs", 12)
         self.declare_parameter("survey_yaw", 2.0 * math.pi)
@@ -129,10 +142,13 @@ class AmclRecoveryNode(Node):
         self._lost_confirm_time = flt("lost_confirm_time")
         self._pose_timeout = flt("pose_timeout")
         self._cooldown = flt("cooldown")
+        self._scatter_on_startup = bool(self.get_parameter("scatter_on_startup").value)
         self._lift_detection = bool(self.get_parameter("lift_detection_enabled").value)
         self._lift_max_wheel_speed = flt("lift_max_wheel_speed")
         self._lift_min_visual_speed = flt("lift_min_visual_speed")
         self._lift_confirm_time = flt("lift_confirm_time")
+        self._slip_min_wheel_speed = flt("slip_min_wheel_speed")
+        self._slip_max_visual_speed = flt("slip_max_visual_speed")
         self._max_legs = integer("max_legs")
         self._survey_yaw = flt("survey_yaw")
         self._leg_distance = flt("leg_distance")
@@ -152,16 +168,23 @@ class AmclRecoveryNode(Node):
         self._state = State.MONITORING
         self._legs = 0
         self._scattered = False
+        self._ever_converged = False
+        self._bootstrapped = False
         self._previous_heading: float | None = None
         self._costmap: OccupancyGrid | None = None
         self._amcl_pose: PoseWithCovarianceStamped | None = None
         self._amcl_active = False
         self._amcl_active_since: float | None = None
+        self._behaviors_active = False
         self._lost_since: float | None = None
         self._wheel_speed = 0.0
         self._visual_speed = 0.0
         self._lift_since: float | None = None
         self._was_lifted = False
+        self._slip_since: float | None = None
+        # Set while a goal is being cancelled on purpose, so the result callback
+        # does not report the cancellation as a behavior failure.
+        self._cancel_pending = False
         self._cooldown_until = 0.0
         # The behavior server owns whatever goal is running. A client that just
         # exits does NOT cancel it, so the rover would keep spinning or driving
@@ -202,6 +225,14 @@ class AmclRecoveryNode(Node):
 
         self._reinit = self.create_client(Empty, "/reinitialize_global_localization")
         self._amcl_state = self.create_client(GetState, "/amcl/get_state")
+        # An action server is advertised at CONFIGURE time, so server_is_ready()
+        # returns true while behavior_server is still inactive and every goal
+        # would be rejected. Measured live: /spin and /drive_on_heading both
+        # listed in `ros2 action list` with behavior_server in state inactive[2].
+        # Poll its lifecycle the same way AMCL's is polled.
+        self._behavior_state = self.create_client(
+            GetState, "/behavior_server/get_state"
+        )
         self._spin = ActionClient(self, Spin, "spin")
         self._drive = ActionClient(self, DriveOnHeading, "drive_on_heading")
         self.create_service(Trigger, "~/relocalize", self._on_relocalize_request)
@@ -239,12 +270,16 @@ class AmclRecoveryNode(Node):
     # --- Monitoring --------------------------------------------------------
 
     def _monitor(self) -> None:
-        """Decide once per period whether AMCL needs rescuing."""
-        if not self._enabled or self._state is not State.MONITORING:
+        """Decide once per period whether to start, stop or continue a recovery."""
+        if not self._enabled:
             return
 
-        self._refresh_amcl_state()
+        self._refresh_lifecycle_states()
         now = time.monotonic()
+
+        if self._state is not State.MONITORING:
+            self._supervise(now)
+            return
 
         if not self._amcl_active:
             self._lost_since = None
@@ -252,6 +287,8 @@ class AmclRecoveryNode(Node):
         if now < self._cooldown_until:
             return
         if self._missing_prerequisites():
+            return
+        if self._bootstrap():
             return
         if self._check_lift(now):
             return
@@ -282,6 +319,93 @@ class AmclRecoveryNode(Node):
             # leaving it uses the tight max_* ones, so a pose hovering near one
             # value cannot oscillate the node in and out of recovery.
             self._lost_since = None
+
+    def _supervise(self, now: float) -> None:
+        """Watch a recovery already in progress and cut it short when warranted.
+
+        Behaviors only report back when they finish, so without this the rover
+        keeps driving through a whole leg after it no longer needs to, and keeps
+        spinning its wheels after someone has picked it up.
+
+        Args:
+            now: Current monotonic time, in seconds.
+        """
+        if self._amcl_pose is not None and is_converged(
+            self._amcl_pose.pose.covariance[COVARIANCE_XX],
+            self._amcl_pose.pose.covariance[COVARIANCE_YY],
+            self._amcl_pose.pose.covariance[COVARIANCE_YAW],
+            self._max_position_std,
+            self._max_yaw_std,
+        ):
+            position_std, yaw_std = self._reported_std()
+            self._ever_converged = True
+            self._stop_motion(
+                f"recovered mid-leg after {self._legs} legs "
+                f"(position std {position_std:.2f} m, yaw std {yaw_std:.2f} rad)",
+                failed=False,
+            )
+            return
+
+        if not self._lift_detection:
+            return
+
+        # Under command the wheels are turning, so the wheels-still test that
+        # catches a carried-but-idle rover cannot fire. Off the ground, what
+        # shows instead is wheels reporting motion the camera cannot see.
+        if is_traction_loss(
+            self._wheel_speed,
+            self._visual_speed,
+            self._slip_min_wheel_speed,
+            self._slip_max_visual_speed,
+        ):
+            if self._slip_since is None:
+                self._slip_since = now
+            elif now - self._slip_since >= self._lift_confirm_time:
+                self._was_lifted = True
+                self._stop_motion(
+                    "wheels turning but the rover is not moving: off the ground "
+                    "or no traction",
+                    failed=True,
+                )
+            return
+
+        self._slip_since = None
+
+    def _stop_motion(self, message: str, failed: bool) -> None:
+        """Cancel the running behavior and return to monitoring.
+
+        Args:
+            message: Logged explanation.
+            failed: Whether this counts as a failed attempt.
+        """
+        if self._active_goal is not None:
+            self._cancel_pending = True
+            self._active_goal.cancel_goal_async()
+        self._slip_since = None
+        self._settle(message, failed=failed)
+
+    def _bootstrap(self) -> bool:
+        """Discard the seeded pose once, at the first opportunity.
+
+        amcl.yaml sets `set_initial_pose: true` so that map -> odom exists
+        before Nav2 activates, otherwise the global costmap blocks and
+        lifecycle_manager aborts the bringup without ever retrying. That seed is
+        an invention, and nav2_amcl gives it a near-zero covariance, so AMCL
+        reports a tight cloud it has no evidence for and the covariance test
+        below would call it converged.
+
+        Scattering replaces the invention with honest uncertainty: AMCL keeps
+        publishing map -> odom, so Nav2 stays up, while the covariance becomes
+        large enough for the normal recovery path to take over.
+
+        Returns:
+            True if a recovery was started, so the caller stops checking.
+        """
+        if self._bootstrapped or not self._scatter_on_startup:
+            return False
+        self._bootstrapped = True
+        self._begin("cold start: replacing the seeded pose", scatter_first=True)
+        return True
 
     def _check_lift(self, now: float) -> bool:
         """Detect the rover being carried, and trigger once it is set down.
@@ -324,26 +448,41 @@ class AmclRecoveryNode(Node):
             return True
         return False
 
-    def _refresh_amcl_state(self) -> None:
-        """Poll AMCL's lifecycle state without blocking the executor."""
-        if not self._amcl_state.service_is_ready():
-            self._amcl_active = False
-            self._amcl_active_since = None
-            return
+    def _refresh_lifecycle_states(self) -> None:
+        """Poll AMCL and the behavior server, without blocking the executor."""
 
-        def on_state(future: Future) -> None:
-            response = future.result()
-            active = (
-                response is not None
-                and response.current_state.id == LifecycleState.PRIMARY_STATE_ACTIVE
-            )
+        def on_amcl(active: bool) -> None:
             if active and not self._amcl_active:
                 self._amcl_active_since = time.monotonic()
             elif not active:
                 self._amcl_active_since = None
             self._amcl_active = active
 
-        self._amcl_state.call_async(GetState.Request()).add_done_callback(on_state)
+        def on_behaviors(active: bool) -> None:
+            self._behaviors_active = active
+
+        self._poll_state(self._amcl_state, on_amcl)
+        self._poll_state(self._behavior_state, on_behaviors)
+
+    def _poll_state(self, client: Client, apply: Callable[[bool], None]) -> None:
+        """Ask one lifecycle node whether it is active.
+
+        Args:
+            client: GetState client for that node.
+            apply: Receives True only when the node reports ACTIVE.
+        """
+        if not client.service_is_ready():
+            apply(False)
+            return
+
+        def on_state(future: Future) -> None:
+            response = future.result()
+            apply(
+                response is not None
+                and response.current_state.id == LifecycleState.PRIMARY_STATE_ACTIVE
+            )
+
+        client.call_async(GetState.Request()).add_done_callback(on_state)
 
     def _reported_std(self) -> tuple[float, float]:
         """Return AMCL's (position, yaw) standard deviations in m and rad."""
@@ -360,6 +499,8 @@ class AmclRecoveryNode(Node):
         missing: list[str] = []
         if self._costmap is None:
             missing.append("no local costmap")
+        if not self._behaviors_active:
+            missing.append("behavior_server not active")
         if not self._spin.server_is_ready():
             missing.append("no spin action server")
         if not self._drive.server_is_ready():
@@ -405,6 +546,7 @@ class AmclRecoveryNode(Node):
         self._state = State.MONITORING
         self._cooldown_until = time.monotonic() + self._cooldown
         if self._active_goal is not None:
+            self._cancel_pending = True
             self._active_goal.cancel_goal_async()
             self.get_logger().warn(f"{reason}: cancelling the running behavior")
             return "cancelled the running behavior"
@@ -417,14 +559,32 @@ class AmclRecoveryNode(Node):
 
     # --- Recovery sequence -------------------------------------------------
 
-    def _begin(self, reason: str) -> None:
+    def _begin(self, reason: str, scatter_first: bool = False) -> None:
+        """Start a recovery attempt.
+
+        Args:
+            reason: Logged explanation.
+            scatter_first: Discard AMCL's estimate before exploring. Correct
+                only when that estimate carries no information, which is the
+                cold-start case. A rover that was localized and then got lost
+                still holds partial information worth keeping, so it explores
+                first and scatters only if exploring fails.
+        """
         self._legs = 0
-        self._scattered = False
         self._previous_heading = None
         self._lost_since = None
         self._lift_since = None
         self._was_lifted = False
         self.get_logger().warn(f"starting recovery: {reason}")
+
+        if scatter_first:
+            self._scattered = True
+            self._reinit.call_async(Empty.Request()).add_done_callback(
+                lambda _future: self._survey()
+            )
+            return
+
+        self._scattered = False
         self._survey()
 
     def _survey(self) -> None:
@@ -450,6 +610,7 @@ class AmclRecoveryNode(Node):
             self._max_yaw_std,
         ):
             position_std, yaw_std = self._reported_std()
+            self._ever_converged = True
             self._settle(
                 f"recovered after {self._legs} legs "
                 f"(position std {position_std:.2f} m, yaw std {yaw_std:.2f} rad)",
@@ -573,15 +734,43 @@ class AmclRecoveryNode(Node):
 
         def on_result(future: Future) -> None:
             self._active_goal = None
-            result = future.result()
-            if result is None or result.status != STATUS_SUCCEEDED:
-                self._settle(f"behavior did not succeed: {result}", failed=True)
+            if self._cancel_pending:
+                # We cancelled it; _stop_motion already settled and logged.
+                self._cancel_pending = False
                 return
-            if on_success is None:
+
+            result = future.result()
+            if result is None:
+                self._settle("no result from the behavior server", failed=True)
+                return
+
+            if result.status == STATUS_SUCCEEDED:
+                if on_success is None:
+                    self._legs += 1
+                    self._evaluate()
+                else:
+                    on_success()
+                return
+
+            # A blocked path is information, not a fault. The behavior server
+            # simulates simulate_ahead_time of motion against the local costmap
+            # and aborts rather than driving into something, which is exactly
+            # what it is for. Count the leg and pick a different direction;
+            # max_legs still bounds how long this can go on.
+            if getattr(result.result, "error_code", 0) in COLLISION_CODES:
                 self._legs += 1
+                self.get_logger().warn(
+                    f"blocked (leg {self._legs}/{self._max_legs}); "
+                    "choosing another direction"
+                )
                 self._evaluate()
-            else:
-                on_success()
+                return
+
+            self._settle(
+                f"behavior failed: status {result.status}, "
+                f"error_code {getattr(result.result, 'error_code', 'n/a')}",
+                failed=True,
+            )
 
         def on_accepted(future: Future) -> None:
             handle = future.result()
@@ -642,18 +831,34 @@ class AmclRecoveryNode(Node):
 
 
 def main(args: list[str] | None = None) -> None:
-    """Spin the recovery node, cancelling any motion on the way out."""
-    rclpy.init(args=args)
+    """Spin the recovery node, cancelling any motion on the way out.
+
+    rclpy's own signal handling shuts the context down before the exception
+    reaches us, and a dead context cannot deliver the cancel: measured, the
+    cancel was issued and then `spin_once` raised "the given context is not
+    valid". So signals are handled here instead, which keeps the context alive
+    long enough to actually stop the rover.
+    """
+    rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
     node = AmclRecoveryNode()
+    stopping = False
+
+    def request_stop(_signum: int, _frame: object) -> None:
+        nonlocal stopping
+        stopping = True
+
+    signal.signal(signal.SIGINT, request_stop)
+    signal.signal(signal.SIGTERM, request_stop)
+
     try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        node.abort("interrupted")
+        while rclpy.ok() and not stopping:
+            rclpy.spin_once(node, timeout_sec=0.1)
+
+        node.abort("shutting down")
         # The cancel is asynchronous, so the executor has to keep running long
-        # enough to put it on the wire. Exiting immediately would leave the
-        # behavior server driving the rover with nobody left to stop it.
+        # enough to put it on the wire.
         deadline = time.monotonic() + SHUTDOWN_CANCEL_TIMEOUT
-        while time.monotonic() < deadline and node.has_active_goal():
+        while rclpy.ok() and time.monotonic() < deadline and node.has_active_goal():
             rclpy.spin_once(node, timeout_sec=0.1)
     finally:
         node.destroy_node()
