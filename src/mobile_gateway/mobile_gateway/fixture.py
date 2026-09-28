@@ -2,6 +2,10 @@
 import math
 import threading
 import time
+from pathlib import Path
+
+from .operations import OperationManager
+from .processes import SimulatedProcessBackend
 
 from .server import TelemetryServer, arguments, token_from_environment
 from .state import TelemetryState
@@ -26,7 +30,8 @@ def main():
                        range_min=0.02, range_max=10.0)
             stop.wait(0.1)
 
-    server = TelemetryServer((args.host, args.port), state, token_from_environment())
+    operations = OperationManager(SimulatedProcessBackend(), Path(args.workspace), enabled=True, simulated=True)
+    server = TelemetryServer((args.host, args.port), state, token_from_environment(), operations=operations)
     updater = threading.Thread(target=update, daemon=True)
     updater.start()
     print(f"SYNTHETIC FIXTURE ONLY at {args.host}:{server.server_port}; no ROS or hardware", flush=True)
@@ -35,6 +40,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        operations.shutdown()
         stop.set()
         updater.join(timeout=2)
         server.server_close()

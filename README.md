@@ -293,5 +293,5 @@ To understand it, in this order:
 5. [`navigation_pkg`](src/navigation_pkg/README.md): Nav2, and the
    mecanum-specific tuning that a differential-drive config would get wrong
 6. [`mobile_gateway`](src/mobile_gateway/README.md): optional authenticated,
-   read-only mobile odometry and lidar summary API, TLS deployment, and a
-   hardware-free client fixture
+   mobile odometry and lidar summary API, opt-in managed runbook operations,
+   TLS deployment, and a hardware-free client fixture

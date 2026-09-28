@@ -6,7 +6,7 @@ setup(
     packages=find_packages(exclude=["test"]),
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/mobile_gateway"]),
-        ("share/mobile_gateway", ["package.xml", "README.md"]),
+        ("share/mobile_gateway", ["package.xml", "README.md", "OPERATIONS.md"]),
     ],
     install_requires=["setuptools"],
     zip_safe=True,

@@ -1,5 +1,9 @@
-"""ROS 2 adapter: subscribers only, no command publisher or service client."""
+"""ROS telemetry and opt-in catalog process management; no arbitrary commands."""
 import threading
+from pathlib import Path
+
+from .operations import OperationError, OperationManager
+from .processes import ProcessBackend
 
 from .server import TelemetryServer, arguments, token_from_environment
 from .state import TelemetryState
@@ -16,6 +20,12 @@ def main():
 
     args, ros_args = arguments("Helios read-only ROS telemetry gateway")
     token = token_from_environment()
+    workspace = Path(args.workspace).expanduser().resolve()
+    if args.enable_commands:
+        if not args.exclusive_stack_control:
+            raise ValueError("Commands require --exclusive-stack-control and an otherwise stopped ROS stack")
+        if not (workspace / "install/setup.bash").is_file() or not (workspace / "src/mapping_localization_pkg").is_dir():
+            raise ValueError("--workspace must identify a built trusted Helios workspace")
     state = TelemetryState()
     rclpy.init(args=ros_args)
 
@@ -46,12 +56,35 @@ def main():
     node = None
     server = None
     worker = None
+    operations = None
     try:
         node = GatewayNode()
-        server = TelemetryServer((args.host, args.port), state, token)
+        def external_guard(owned, operation_id):
+            # Discovery is an additional check, not proof of exclusivity. The
+            # operator must stop all externally launched stack processes first.
+            groups = {
+                'motors': {'roboclaw_driver'},
+                'sensors': {'ekf_filter_node', 'wheel_odometry', 'zed_odom_covariance', 'urg_node2', 'zed_node', 'robot_state_publisher'},
+                'joystick': {'joy_node', 'teleop_joy'},
+                'slam_mapping': {'slam_toolbox'}, 'slam_localization': {'slam_toolbox'},
+                'rtab_mapping': {'rtabmap'}, 'rtab_localization': {'rtabmap'},
+                'amcl': {'amcl', 'map_server', 'amcl_recovery'},
+                'navigation': {'controller_server', 'planner_server', 'behavior_server', 'bt_navigator', 'velocity_smoother'},
+            }
+            allowed = set().union(*(groups.get(key, set()) for key in owned)) if owned else set()
+            known = set().union(*groups.values())
+            names = node.get_node_names()
+            foreign = (set(names) & known) - allowed
+            foreign.update(name for name in known if names.count(name) > 1)
+            foreign.update(info.node_name for info in node.get_publishers_info_by_topic('/cmd_vel') if info.node_name not in allowed)
+            if foreign:
+                raise OperationError(409, 'external_stack', 'Externally managed or duplicate ROS nodes detected; stop them outside this gateway: ' + ', '.join(sorted(foreign)))
+        operations = OperationManager(ProcessBackend(cwd=str(workspace)), workspace,
+                                      enabled=args.enable_commands, external_guard=external_guard)
+        server = TelemetryServer((args.host, args.port), state, token, operations=operations)
         worker = threading.Thread(target=server.serve_forever, daemon=True)
         worker.start()
-        node.get_logger().info("Read-only telemetry gateway started; no motion interfaces exposed")
+        node.get_logger().info("Mobile gateway started; managed commands " + ("enabled" if args.enable_commands else "disabled"))
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
@@ -61,6 +94,8 @@ def main():
             server.server_close()
         if worker is not None:
             worker.join(timeout=5)
+        if operations is not None:
+            operations.shutdown()
         if node is not None:
             node.destroy_node()
         if rclpy.ok():

@@ -1,6 +1,6 @@
 # Helios mobile telemetry gateway
 
-A small ROS 2 Python package providing authenticated, read-only HTTP telemetry for a mobile client. It subscribes to existing topics; it does not start sensors, publish commands, call services, or send navigation goals. No physical hardware was actuated during development.
+A small ROS 2 Python package providing authenticated HTTP telemetry and opt-in managed runbook operations for a mobile client. By default only telemetry is enabled. An explicitly enabled operation manager can start/stop allowlisted ROS launch processes and run fixed save/recovery/diagnostic commands. It never accepts arbitrary shell input or submits navigation goals. No physical hardware was actuated during development. See [the operation catalog and API](OPERATIONS.md).
 
 ## Repository integration
 
@@ -17,7 +17,7 @@ Subscriptions use ROS sensor-data QoS (best effort, volatile). Topic names are c
 
 ## API version 1
 
-`GET /v1/telemetry` with exactly one `Authorization: Bearer <token>` header. Paths are exact; no query parameters. Responses have `Content-Type: application/json`, `Cache-Control: no-store`, and close the connection. Suggested client polling: 2 Hz, one outstanding request, with a finite timeout and reconnect backoff. A disconnect has no robot-side action because this API is read-only; clients must immediately mark their display disconnected and must not treat cached telemetry as live.
+`GET /v1/telemetry` with exactly one `Authorization: Bearer <token>` header. Paths are exact; no query parameters. Responses have `Content-Type: application/json`, `Cache-Control: no-store`, and close the connection. Suggested client polling: 2 Hz, one outstanding request, with a finite timeout and reconnect backoff. A telemetry-only disconnect has no robot-side action; an operation control lease expires without heartbeats and requests owned-process shutdown; clients must immediately mark their display disconnected and must not treat cached telemetry as live.
 
 ```json
 {"api_version":1,"source":"ros2","odometry":{"available":true,"age_seconds":0.1,"frame_id":"odom","child_frame_id":"base_link","x":1.0,"y":2.0,"heading":0.3,"linear_x":0.2,"linear_y":0.0,"angular_z":0.1},"scan":{"available":true,"age_seconds":0.1,"frame_id":"laser","nearest_m":1.2}}
@@ -27,7 +27,7 @@ Subscriptions use ROS sensor-data QoS (best effort, volatile). Topic names are c
 
 Distances are meters, heading radians, linear velocity meters/second, angular velocity radians/second. Heading is yaw from the normalized quaternion. Numeric JSON values are finite. Missing data is `{"available":false}`; invalid or older-than-2-second data is `{"available":false,"age_seconds":...}` with no measurement fields. At exactly 2 seconds a valid sample remains available. A fresh scan with no valid finite in-range returns is available with `"nearest_m":null`; this does **not** mean the space is clear. Consumers must accept missing optional fields when unavailable and ignore unknown fields for future additive changes.
 
-Invalid credentials return 401 (`unauthorized`); authenticated non-GET methods return 405 (`method_not_allowed`, `Allow: GET`); unknown paths return 404 (`not_found`). These errors contain no credentials. A HEAD response has no body. There are no motion, emergency-stop, map, mission, or navigation endpoints. Motion timeouts/deadman controls are consequently not part of this gateway; adding motion later requires a separate safety design.
+Invalid credentials return 401 (`unauthorized`); authenticated non-GET methods return 405 (`method_not_allowed`, `Allow: GET`); unknown paths return 404 (`not_found`). These errors contain no credentials. A HEAD response has no body. This telemetry endpoint does not command motion. The separately enabled [operation API](OPERATIONS.md) can launch motion-capable stacks and recovery services; it has an expiring control lease and best-effort graceful process shutdown. There is no emergency-stop, velocity, map-rendering, mission or navigation-goal API.
 
 ## ROS 2 deployment
 
@@ -94,6 +94,6 @@ export HELIOS_GATEWAY_TOKEN="$(python3 -c 'import secrets; print(secrets.token_u
 PYTHONPATH=src/mobile_gateway python3 -m mobile_gateway.fixture --port 8080
 ```
 
-The fixture continuously generates synthetic odometry and scan data using the same HTTP server and state validation as the ROS adapter. It prints a synthetic-only banner and never imports ROS or contacts hardware. Use the loopback URL for a same-host development client; a phone requires the TLS deployment above. Stop with Ctrl-C. Never present fixture values as live robot measurements.
+The fixture continuously generates synthetic odometry and scan data using the same HTTP server and state validation as the ROS adapter. Its operation API is enabled with a simulated backend: services remain running and actions complete synthetically, with no subprocesses or files created. It prints a synthetic-only banner and never imports ROS or contacts hardware. Use the loopback URL for a same-host development client; a phone requires the TLS deployment above. Stop with Ctrl-C. Never present fixture values as live robot measurements.
 
 Tests exercise actual loopback sockets, authentication and duplicate headers, method/path rejection, disconnect recovery, socket timeout and slow-drip deadline/slot recovery, monotonic stale boundaries, quaternion normalization, finite-value rejection, and scan filtering/null semantics. Local tests do not prove ROS discovery/QoS, colcon installation on the robot, trusted TLS on a phone, real sensor freshness, or robot connectivity. Those require deployment validation by an operator. No hardware, map rendering, or navigation validation is claimed.
