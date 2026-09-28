@@ -20,3 +20,9 @@ __pycache__/
 
 #CLAUDECODE RULES
 CLAUDE.md
+
+# VLA model weights and converted datasets (large binaries, never pushed)
+models/*
+!models/.gitkeep
+datasets/*
+!datasets/.gitkeep
