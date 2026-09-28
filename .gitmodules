@@ -4,3 +4,6 @@
 [submodule "src/perception_pkg/Camera/zed-ros2-wrapper"]
 	path = src/perception_pkg/camera/zed-ros2-wrapper
 	url = https://github.com/stereolabs/zed-ros2-wrapper.git
+[submodule "src/vla_pkg/omnivla"]
+	path = src/vla_pkg/omnivla
+	url = https://github.com/NHirose/OmniVLA.git
