@@ -26,3 +26,9 @@ models/*
 !models/.gitkeep
 datasets/*
 !datasets/.gitkeep
+
+# Python virtualenvs (machine-specific, absolute paths baked in).
+# COLCON_IGNORE stays tracked: without it colcon indexes every setup.py
+# under site-packages as a ROS package.
+.venvs/*
+!.venvs/COLCON_IGNORE
