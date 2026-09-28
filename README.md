@@ -295,3 +295,4 @@ To understand it, in this order:
 6. [`mobile_gateway`](src/mobile_gateway/README.md): optional authenticated,
    mobile odometry and lidar summary API, opt-in managed runbook operations,
    TLS deployment, and a hardware-free client fixture
+   - [Pranav’s complete phone setup and handoff](src/mobile_gateway/PRANAV_SETUP.md)

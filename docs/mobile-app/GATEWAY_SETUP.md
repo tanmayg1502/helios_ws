@@ -2,7 +2,7 @@
 
 **Start here:** [Pranav’s complete Jetson-to-iPhone setup and handoff](PRANAV_SETUP.md).
 
-A small ROS 2 Python package providing authenticated HTTP telemetry and opt-in managed runbook operations for a mobile client. By default only telemetry is enabled. An explicitly enabled operation manager can start/stop allowlisted ROS launch processes and run fixed save/recovery/diagnostic commands. It never accepts arbitrary shell input or submits navigation goals. No physical hardware was actuated during development. See [the operation catalog and API](OPERATIONS.md).
+A small ROS 2 Python package providing authenticated HTTP telemetry and opt-in managed runbook operations for a mobile client. By default only telemetry is enabled. An explicitly enabled operation manager can start/stop allowlisted ROS launch processes and run fixed save/recovery/diagnostic commands. It never accepts arbitrary shell input or submits navigation goals. No physical hardware was actuated during development. See [the operation catalog and API](GATEWAY_OPERATIONS.md).
 
 ## Repository integration
 
@@ -10,10 +10,10 @@ The source audit identifies these interfaces:
 
 | Input / existing capability | Repository evidence | Gateway use |
 | --- | --- | --- |
-| `/odometry/filtered`, `nav_msgs/msg/Odometry` | [EKF launch](../perception_pkg/sensor_fusion/launch/ekf.launch.py), [EKF config](../perception_pkg/sensor_fusion/config/ekf.yaml) | Pose and planar velocity |
-| `/scan`, `sensor_msgs/msg/LaserScan`, frame `laser` | [LiDAR launch](../perception_pkg/lidar/custom_config/launch/lidar.launch.py), [LiDAR config](../perception_pkg/lidar/custom_config/config/urg_node2.yaml) | Nearest valid return |
-| `/map` and localization | [Mapping package](../mapping_localization_pkg/README.md) | Not exposed |
-| Nav2 goals and `/cmd_vel` | [Navigation launch](../navigation_pkg/launch/navigation.launch.py), [navigation docs](../navigation_pkg/README.md) | Not exposed |
+| `/odometry/filtered`, `nav_msgs/msg/Odometry` | [EKF launch](https://github.com/tanmayg1502/helios_ws/blob/codex/mobile-telemetry-gateway/src/perception_pkg/sensor_fusion/launch/ekf.launch.py), [EKF config](https://github.com/tanmayg1502/helios_ws/blob/codex/mobile-telemetry-gateway/src/perception_pkg/sensor_fusion/config/ekf.yaml) | Pose and planar velocity |
+| `/scan`, `sensor_msgs/msg/LaserScan`, frame `laser` | [LiDAR launch](https://github.com/tanmayg1502/helios_ws/blob/codex/mobile-telemetry-gateway/src/perception_pkg/lidar/custom_config/launch/lidar.launch.py), [LiDAR config](https://github.com/tanmayg1502/helios_ws/blob/codex/mobile-telemetry-gateway/src/perception_pkg/lidar/custom_config/config/urg_node2.yaml) | Nearest valid return |
+| `/map` and localization | [Mapping package](https://github.com/tanmayg1502/helios_ws/blob/codex/mobile-telemetry-gateway/src/mapping_localization_pkg/README.md) | Not exposed |
+| Nav2 goals and `/cmd_vel` | [Navigation launch](https://github.com/tanmayg1502/helios_ws/blob/codex/mobile-telemetry-gateway/src/navigation_pkg/launch/navigation.launch.py), [navigation docs](https://github.com/tanmayg1502/helios_ws/blob/codex/mobile-telemetry-gateway/src/navigation_pkg/README.md) | Not exposed |
 
 Subscriptions use ROS sensor-data QoS (best effort, volatile). Topic names are configurable via ROS parameters. Gateway freshness measures monotonic time since callback receipt, **not** the ROS message timestamp or a guarantee that the sensor measurement itself is current. Delayed or replayed ROS data can therefore appear fresh. Odometry is in the supplied odometry frame; it is not a map-relative location. The nearest return is a scan summary, not a collision or clearance guarantee.
 
@@ -29,7 +29,7 @@ Subscriptions use ROS sensor-data QoS (best effort, volatile). Topic names are c
 
 Distances are meters, heading radians, linear velocity meters/second, angular velocity radians/second. Heading is yaw from the normalized quaternion. Numeric JSON values are finite. Missing data is `{"available":false}`; invalid or older-than-2-second data is `{"available":false,"age_seconds":...}` with no measurement fields. At exactly 2 seconds a valid sample remains available. A fresh scan with no valid finite in-range returns is available with `"nearest_m":null`; this does **not** mean the space is clear. Consumers must accept missing optional fields when unavailable and ignore unknown fields for future additive changes.
 
-Invalid credentials return 401 (`unauthorized`); authenticated non-GET methods return 405 (`method_not_allowed`, `Allow: GET`); unknown paths return 404 (`not_found`). These errors contain no credentials. A HEAD response has no body. This telemetry endpoint does not command motion. The separately enabled [operation API](OPERATIONS.md) can launch motion-capable stacks and recovery services; it has an expiring control lease and best-effort graceful process shutdown. There is no emergency-stop, velocity, map-rendering, mission or navigation-goal API.
+Invalid credentials return 401 (`unauthorized`); authenticated non-GET methods return 405 (`method_not_allowed`, `Allow: GET`); unknown paths return 404 (`not_found`). These errors contain no credentials. A HEAD response has no body. This telemetry endpoint does not command motion. The separately enabled [operation API](GATEWAY_OPERATIONS.md) can launch motion-capable stacks and recovery services; it has an expiring control lease and best-effort graceful process shutdown. There is no emergency-stop, velocity, map-rendering, mission or navigation-goal API.
 
 ## ROS 2 deployment
 
@@ -99,3 +99,6 @@ PYTHONPATH=src/mobile_gateway python3 -m mobile_gateway.fixture --port 8080
 The fixture continuously generates synthetic odometry and scan data using the same HTTP server and state validation as the ROS adapter. Its operation API is enabled with a simulated backend: services remain running and actions complete synthetically, with no subprocesses or files created. It prints a synthetic-only banner and never imports ROS or contacts hardware. Use the loopback URL for a same-host development client; a phone requires the TLS deployment above. Stop with Ctrl-C. Never present fixture values as live robot measurements.
 
 Tests exercise actual loopback sockets, authentication and duplicate headers, method/path rejection, disconnect recovery, socket timeout and slow-drip deadline/slot recovery, monotonic stale boundaries, quaternion normalization, finite-value rejection, and scan filtering/null semantics. Local tests do not prove ROS discovery/QoS, colcon installation on the robot, trusted TLS on a phone, real sensor freshness, or robot connectivity. Those require deployment validation by an operator. No hardware, map rendering, or navigation validation is claimed.
+
+---
+This file is part of the mirrored [Helios setup bundle](README.md). Shell commands and source paths refer to the original app or robot repository root, as specified in the guide.
