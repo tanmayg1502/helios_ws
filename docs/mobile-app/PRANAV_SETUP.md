@@ -250,6 +250,8 @@ In **Xcode 26.4**:
 2. Pair/connect the iPhone, unlock it, and follow its trust prompts. Enable Developer Mode if required; see [Apple's Developer Mode instructions](https://developer.apple.com/documentation/xcode/enabling-developer-mode-on-a-device).
 3. Select the **Helios** scheme and the physical iPhone as run destination, then Run. The target requires **iOS 26+**. Resolve signing/provisioning errors with your team's entitlements/device access; a private GitHub invitation does not grant Apple signing access.
 
+Every build starts in real robot mode. Developer tools are a separate app setting, distinct from iOS device Developer Mode: **Connect → Enable developer mode → Enable simulation**, visible only in Debug or eligible dedicated TestFlight builds. Backgrounding exits this opt-in. See [distribution policy](DEVELOPER_MODE.md).
+
 The checked-in Xcode project is ready to open. XcodeGen is optional and needed only if you change `project.yml`; preserve signing changes when regenerating. This is a developer installation, not an App Store/TestFlight release; signing/provisioning lifetime depends on your team. For Xcode's device workflow, see [Apple's run-on-device guide](https://help.apple.com/xcode/mac/current/en.lproj/dev5a825a1ca.html).
 
 ## 9. Connect the phone in telemetry-only mode — required
@@ -260,10 +262,10 @@ Keep the gateway and proxy running. Put the phone on the intended LAN/VPN, then:
 2. Enter the base URL, e.g. `https://robot.example.net`. **Do not append `/v1/telemetry`**, a query, or credentials.
 3. Enter the exact token **value** from the protected file, without `Bearer ` or `export HELIOS_GATEWAY_TOKEN=`.
 4. Tap **Connect** and allow Local Network access if iOS asks.
-5. Open **Overview** and verify frames, SI values and freshness against the Jetson's readings. Missing sensors must look unavailable. The **Map** tab remains a labeled demo illustration; it is not a live map.
+5. Open **Overview** and verify frames, SI values and freshness against the Jetson's readings. Missing sensors must look unavailable. The **Map** tab says “Live map unavailable”; the gateway does not provide captured maps.
 6. Open **Operations** to verify the catalog loads but commands are disabled. Do not acquire control at this stage.
 
-Disconnect once and check readings clear, then reconnect. Closing/backgrounding the app clears live readings; restarting it loses the in-memory credentials. A `fixture` source means a synthetic test server; do not confuse that with robot validation. Never use off-device plain HTTP or the public fixture token for the real robot.
+Disconnect once and check readings clear, then reconnect. Closing/backgrounding the app clears live readings; restarting it loses the in-memory credentials. Real mode rejects `fixture` and unknown sources. Debug or eligible internal TestFlight builds can explicitly opt into fixture-only developer mode; see [developer-mode setup](DEVELOPER_MODE.md). Production Release has no developer tools. Never use off-device plain HTTP or the public fixture token for the real robot.
 
 ## 10. Transfer to managed operations — optional, only after steps 1–9 pass
 
@@ -300,7 +302,7 @@ Start one stage at a time, read confirmation dialogs, and inspect job output/tel
 
 To shut down, save desired map outputs first, then use **Stop managed processes** (stop-all). Observe jobs reaching stopped/terminal states; do not equate HTTP acceptance with completion. Individual stops reject active dependents. Failed stops require local intervention, not repeated blind starts. RTAB needs graceful shutdown for its database; no automatic SIGKILL escalation is used.
 
-**Foreground/lease behavior:** the app renews every three seconds. Ten seconds without renewal requests gateway-owned shutdown. Locking the phone, changing apps, backgrounding, disconnecting, or entering demo stops renewal; foregrounding does not silently reacquire. Save before leaving. Stop-all is the intentional shutdown path; lease expiry is a fallback, not an instantaneous physical stop. Network/OS/gateway failure can prevent cleanup and external processes are outside this control.
+**Foreground/lease behavior:** the app renews every three seconds. Ten seconds without renewal requests gateway-owned shutdown. Locking the phone, changing apps, backgrounding, disconnecting, or switching robot/developer modes stops renewal; foregrounding does not silently reacquire. Save before leaving. Stop-all is the intentional shutdown path; lease expiry is a fallback, not an instantaneous physical stop. Network/OS/gateway failure can prevent cleanup and external processes are outside this control.
 
 ## 12. Mapping, localization and recovery recipes — optional
 
@@ -351,7 +353,7 @@ An automatic gateway service is **not configured by this change**. Design one on
 | Private iOS repo 404 | Repository invitation/account access; ask its owner for access |
 | Xcode signing/install failure | Correct team, bundle identifier, device provisioning, trust/Developer Mode, supported OS; not a ROS issue |
 | iOS Local Network denied | Enable Helios Local Network permission in iOS settings; verify VPN policy allows the robot route |
-| App says fixture | Synthetic server selected; stop it and connect to the actual deployed ROS gateway before hardware acceptance |
+| Gateway mode mismatch | Real mode requires the actual ROS gateway. Fixture testing requires eligible developer mode; return to real robot mode before hardware acceptance |
 
 ## 15. Acceptance and what remains unverified
 
@@ -365,7 +367,7 @@ Record the gateway and app commits, robot environment/domain, hostname/certifica
 - [ ] Map outputs checked if used; stop-all, failure handling and lease loss tested in a controlled robot acceptance procedure with a local hardware stop available.
 - [ ] Operator understands reboot/foreground limits and has a token/certificate renewal and map-backup plan.
 
-Development validation covered **54 gateway tests, a package wheel build, Python 3.12 CI, 10 app unit tests, two iOS simulator UI tests, and production-client fixture/fault harnesses**. Operations tests used simulated/mocked processes; no physical robot was actuated. These do not prove Jetson ROS discovery, real map saving, serial access, physical stopping, phone TLS/signing or autonomous navigation.
+Initial integration validation covered **54 gateway tests, a package wheel build, Python 3.12 CI, 10 app unit tests, two iOS simulator UI tests, and production-client fixture/fault harnesses**. Operations tests used simulated/mocked processes; no physical robot was actuated. See [the latest app validation record](VALIDATION.md) for subsequent developer-mode checks. These do not prove Jetson ROS discovery, real map saving, serial access, physical stopping, phone TLS/signing or autonomous navigation.
 
 Unsupported in this release: arbitrary terminal commands, package/OS administration, calibration/EEPROM writes, direct phone joystick/velocity control, navigation goal submission/cancellation, camera video, live map streaming, battery telemetry and physical emergency-stop certification. The phone can manage the documented software catalog; it is not a replacement for the robot's hardware stop and supervised commissioning.
 

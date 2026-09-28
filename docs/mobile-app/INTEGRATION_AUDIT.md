@@ -10,7 +10,7 @@ After this original-source audit, a separate `mobile_gateway` package was implem
 
 The root `README.md` describes a Lynxmotion A4WD3 four-wheel mecanum rover, NVIDIA Jetson AGX Orin, Ubuntu 24.04 / ROS 2 Jazzy, RoboClaw controllers, Hokuyo UST-10LX lidar, and ZED 2i stereo camera/IMU. It supports manual Bluetooth gamepad driving, odometry, 2D/3D mapping, and localization. Nav2 is configured and launches, but the repository explicitly says full autonomous goal-to-goal driving has not been validated. Do not present autonomous navigation as proven functionality.
 
-The phone app starts in a clearly labeled local demonstration. Simulated pose, illustrative map, and motion are not readings or commands exchanged with this robot. No physical hardware connection has been established or verified; the client has been exercised against a synthetic gateway.
+At the time of this original audit, the phone app started in a clearly labeled local demonstration. Current builds start in real robot mode; samples require eligible developer opt-in (see DEVELOPER_MODE.md). Simulated pose, illustrative map, and motion are not readings or commands exchanged with this robot. No physical hardware connection has been established or verified; the client has been exercised against a synthetic gateway.
 
 ## Actual ROS contracts
 

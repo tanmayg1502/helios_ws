@@ -1,6 +1,6 @@
 # Helios for iOS
 
-Native SwiftUI companion for Pranav's Helios rover. The app connects to the companion **mobile_gateway API v1** for fused odometry, a lidar summary, and explicitly enabled managed robot operations. It also includes a separate, explicitly simulated map/telemetry demo. Requires Xcode 26.4, Swift 6.2+ toolchain (Swift 6 language mode), and iOS 26+. No third-party app dependencies.
+Native SwiftUI companion for Pranav's Helios rover. The app connects to the companion **mobile_gateway API v1** for fused odometry, a lidar summary, and explicitly enabled managed robot operations. It starts in real robot mode. Local samples and network fixtures require explicit developer-mode opt-in in eligible Debug or internal TestFlight builds; ordinary Release has no developer tools. See [developer-mode distribution and lifecycle](DEVELOPER_MODE.md). Requires Xcode 26.4, Swift 6.2+ toolchain (Swift 6 language mode), and iOS 26+. No third-party app dependencies.
 
 ## Open and run
 
@@ -32,9 +32,9 @@ The real hostname, certificate/trust setup, gateway installation, token and runn
 - Displays frame IDs, X/Y/yaw, forward/lateral/yaw velocity, and the nearest finite lidar return in SI units.
 - Rejects unsupported versions and incomplete available data. Missing or stale sensors are shown as unavailable; no valid lidar return does not imply clear space.
 - Includes network transit conservatively in a **monotonic** two-second freshness window. This is freshness since gateway callback receipt, not proof of the sensor's acquisition time; ROS bags/delayed publishers can appear fresh.
-- Clears readings on request failures, manual disconnect, and app backgrounding. Automatically resumes/retries while enabled; **Use demo mode** stops live polling.
-- Labels `source: fixture` responses as simulated. ROS source identifies the adapter, not proof of hardware. The map tab always remains a labeled synthetic illustration; it does not overlay odometry on a real map.
-- HTTPS only off-device. Plain HTTP is accepted only for loopback development. Redirects are refused, credentials stay in memory, cookies/cache are disabled, response bodies are capped at 16 KiB, and requests have finite timeouts. The app never disables certificate validation.
+- Clears readings on request failures, manual disconnect, and app backgrounding. Automatically resumes/retries while enabled in real mode; switching modes disconnects and drops local control. Backgrounding exits developer mode.
+- Real mode accepts only `source: ros2` and non-simulated jobs; missing/unknown/fixture sources are rejected. Developer mode accepts only fixtures and labels them simulated. ROS source identifies the adapter, not proof of hardware. The map tab is unavailable in real mode; synthetic geometry exists only after developer opt-in.
+- HTTPS only off-device. Plain HTTP is accepted only for loopback in explicit fixture mode. Redirects are refused, credentials stay in memory, cookies/cache are disabled, telemetry responses are capped at 16 KiB and operation responses at 256 KiB, and requests have finite timeouts. The app never disables certificate validation.
 
 The **Operations** tab now supports 20 repo-backed startup, shutdown, mapping, localization, recovery and diagnostic operations. It uses an explicit expiring control lease, typed parameter forms, confirmations and job/output views. See [OPERATIONS.md](IOS_APP_OPERATIONS.md) for the catalog and robot deployment flags. No direct velocity, emergency-stop, navigation-goal, camera, map-stream or battery API is present. This does not claim the rover's autonomy is hardware validated.
 
@@ -49,7 +49,7 @@ export HELIOS_GATEWAY_TOKEN=helios-local-fixture-token-32-chars-only
 PYTHONPATH=src/mobile_gateway python3 -m mobile_gateway.fixture --port 18080
 ```
 
-This is a disposable public test token, never a robot credential. In the simulator, use `http://localhost:18080` and that test token. A real phone's `localhost` means the phone itself; use the HTTPS setup above for an off-device gateway.
+This is a disposable public test token, never a robot credential. In a Debug simulator build, first choose **Connect → Enable developer mode → Enable simulation**, then use `http://localhost:18080` and that test token. A real phone's `localhost` means the phone itself; use the HTTPS setup above for an off-device gateway.
 
 From this iOS project:
 
@@ -68,19 +68,19 @@ xcodebuild -project Helios.xcodeproj -scheme HeliosIntegration \
   -derivedDataPath /tmp/helios-ios-verified test CODE_SIGNING_ALLOWED=NO
 ```
 
-`check-gateway.sh` compiles and executes the **production** URLSession client and observable connection controller on macOS against the actual gateway fixture, covering auth, decoding, pause/resume, disconnect cancellation and recovery after corrected credentials. The iOS unit suite separately checks configuration, malformed/versioned data, freshness and demo playback. For delayed-response and automatic recovery tests against the actual gateway server:
+`check-gateway.sh` compiles the shared URLSession client and observable connection controller with `-D DEBUG`, then explicitly opts into fixture mode on macOS against the actual gateway fixture, covering auth, decoding, pause/resume, disconnect cancellation and recovery after corrected credentials. The iOS unit suite separately checks configuration, malformed/versioned data, freshness and demo playback. For delayed-response and automatic recovery tests against the actual gateway server:
 
 ```sh
 PYTHONPATH=../helios-mobile-gateway/src/mobile_gateway python3 Tests/run_gateway_faults.py
 ```
 
-The opt-in UI suite types the endpoint/token and exercises connect → live overview → disconnect → demo.
+The Debug UI suite verifies real-mode defaults, explicit opt-in, fixture telemetry and commands, local preview, and background reset. Release/TestFlight simulator UI checks verify tools stay closed without verified eligibility. The harness compile flag is test-only; it does not change the app Release configuration.
 
 ## Architecture
 
-`App/RootView` owns `DemoSession` and `LiveConnection`. Feature views share those observable main-actor models. `GatewayClient` validates configuration, performs bounded authenticated requests and decodes typed API values. `LiveConnection` owns the cancellable polling task; generation checks prevent old responses from repopulating a disconnected/reconfigured screen. The separate `OperationsSession` polls the operation catalog, owns the explicit control lease, scopes cancellable HTTP requests, and retains command outcomes separately from connection status. No hardware networking code is coupled to the demo model. `GatewayOdometry` and `GatewayScan` enforce freshness for presentation.
+`App/RootView` owns `DemoSession`, `LiveConnection`, and the fail-closed `DeveloperAccess`. The demo timer runs only during opt-in. Feature views share those observable main-actor models. `GatewayClient` validates configuration, performs bounded authenticated requests and decodes typed API values. `LiveConnection` owns the cancellable polling task; generation checks prevent old responses from repopulating a disconnected/reconfigured screen. The separate `OperationsSession` polls the operation catalog, owns the explicit control lease, scopes cancellable HTTP requests, and retains command outcomes separately from connection status. No hardware networking code is coupled to the demo model. `GatewayOdometry` and `GatewayScan` enforce freshness for presentation.
 
-`INTEGRATION.md` records the original upstream source audit, ROS contracts and future requirements for map transforms or control. `VALIDATION.md` records checks performed and their limits.
+[original integration audit](INTEGRATION_AUDIT.md) records the original upstream source audit, ROS contracts and future requirements for map transforms or control. `VALIDATION.md` records checks performed and their limits.
 
 ---
 This file is part of the mirrored [Helios setup bundle](README.md). Shell commands and source paths refer to the original app or robot repository root, as specified in the guide.

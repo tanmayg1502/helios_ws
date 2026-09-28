@@ -25,9 +25,9 @@ Not exposed: direct phone joystick/velocity commands, navigation goal submission
 4. Open an operation, fill its typed inputs, and run it. Check the resulting job state and output; acceptance does not mean success.
 5. Stop dependents before their providers, or use **Stop managed processes** for orderly shutdown. Save map outputs before shutdown.
 
-The foreground app renews an exclusive lease every three seconds. After ten seconds without a heartbeat, the gateway requests shutdown of its owned work. Backgrounding, disconnecting or selecting demo mode stops renewal. Returning to the foreground does **not** silently reacquire control. An OS/gateway failure can prevent cleanup; this is not a physical deadman or emergency stop, and it cannot stop software launched from other terminals.
+The foreground app renews an exclusive lease every three seconds. After ten seconds without a heartbeat, the gateway requests shutdown of its owned work. Backgrounding, disconnecting or switching robot/developer modes stops renewal. Developer mode accepts only simulated fixture commands and exits on backgrounding; ordinary Release cannot enable it. Returning to the foreground does **not** silently reacquire control. An OS/gateway failure can prevent cleanup; this is not a physical deadman or emergency stop, and it cannot stop software launched from other terminals.
 
-Requests are sent once. If the response is lost, the app reports that the outcome may be unknown and preserves that message across heartbeat renewals. Check jobs before repeating the operation. Request identifiers allow bounded server-side duplicate detection, but the app never automatically retries command mutations. Disconnect cancels outstanding HTTP sessions; this cannot undo commands already accepted by the server.
+Before each mutation the client validates gateway identity through the catalog, using the same cancellation scope. Mutation requests are sent once. If the response is lost, the app reports that the outcome may be unknown and preserves that message across heartbeat renewals. Check jobs before repeating the operation. Request identifiers allow bounded server-side duplicate detection, but the app never automatically retries command mutations. Disconnect cancels outstanding HTTP sessions; this cannot undo commands already accepted by the server.
 
 Active jobs and stop controls are above the catalog. Completed jobs are collapsed below it. Process output shows a short catalog preview; **Refresh output** fetches the latest bounded 1,024-byte log tail. Failed stops and server rejection messages remain visible.
 
@@ -49,7 +49,7 @@ Keep the gateway unprivileged with the robot's existing device permissions. Conf
 
 ## Fixture validation
 
-Start the companion fixture as described in README. It uses a simulated process backend, labels all responses/jobs as fixture data, and never executes ROS or hardware commands. Then run:
+Start the companion fixture as described in README. The Debug app requires **Connect → Enable developer mode → Enable simulation**; ordinary Release rejects fixtures. The script explicitly compiles Debug tooling and selects fixture mode. It uses a simulated process backend, labels all responses/jobs as fixture data, and never executes ROS or hardware commands. Then run:
 
 ```sh
 HELIOS_TEST_ENDPOINT=http://localhost:18080 \
