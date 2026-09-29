@@ -1,9 +1,7 @@
 name: Mobile gateway
 on:
   pull_request:
-    paths: ['src/mobile_gateway/**', '.github/workflows/mobile-gateway.yml']
   push:
-    paths: ['src/mobile_gateway/**', '.github/workflows/mobile-gateway.yml']
 permissions:
   contents: read
 jobs:
@@ -18,3 +16,20 @@ jobs:
         env:
           PYTHONPATH: src/mobile_gateway
         run: python -m unittest discover -s src/mobile_gateway/test -v
+  jazzy-package:
+    runs-on: ubuntu-latest
+    container: ros:jazzy-ros-base
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install package build and message dependencies
+        run: |
+          apt-get update
+          apt-get install -y python3-colcon-common-extensions ros-jazzy-nav-msgs ros-jazzy-sensor-msgs
+      - name: Build and check ROS entry point without starting a robot stack
+        shell: bash
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          colcon build --packages-select mobile_gateway
+          source install/setup.bash
+          ros2 pkg executables mobile_gateway | grep -Fx 'mobile_gateway mobile_gateway'
+          ros2 run mobile_gateway mobile_gateway --help

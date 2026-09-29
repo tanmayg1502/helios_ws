@@ -9,6 +9,32 @@ from .server import TelemetryServer, arguments, operator_token_from_environment,
 from .state import TelemetryState
 
 
+STACK_NODES = {
+    'motors': {'roboclaw_driver'},
+    'sensors': {'ekf_filter_node', 'wheel_odometry', 'zed_odom_covariance', 'urg_node2', 'zed_node', 'robot_state_publisher'},
+    'joystick': {'joy_node', 'teleop_joy'},
+    'slam_mapping': {'slam_toolbox'}, 'slam_localization': {'slam_toolbox'},
+    'rtab_mapping': {'rtabmap'}, 'rtab_localization': {'rtabmap'},
+    'amcl': {'amcl', 'map_server', 'amcl_recovery'},
+    'navigation': {'controller_server', 'planner_server', 'behavior_server', 'bt_navigator', 'velocity_smoother'},
+}
+
+
+def check_external_stack(node, owned):
+    # Discovery is an additional check, not proof of exclusivity or a physical stop.
+    allowed = set().union(*(STACK_NODES.get(key, set()) for key in owned)) if owned else set()
+    known = set().union(*STACK_NODES.values())
+    names = node.get_node_names()
+    foreign = (set(names) & known) - allowed
+    foreign.update(name for name in known if names.count(name) > 1)
+    foreign.update(info.node_name for info in node.get_publishers_info_by_topic('/cmd_vel')
+                   if info.node_name not in allowed)
+    if foreign:
+        raise OperationError(409, 'external_stack',
+                             'Externally managed or duplicate ROS nodes detected; stop them outside this gateway: '
+                             + ', '.join(sorted(foreign)))
+
+
 def main():
     # Keep ROS imports out of state/server so the fixture and tests run anywhere.
     import rclpy
@@ -61,25 +87,7 @@ def main():
     try:
         node = GatewayNode()
         def external_guard(owned, operation_id):
-            # Discovery is an additional check, not proof of exclusivity. The
-            # operator must stop all externally launched stack processes first.
-            groups = {
-                'motors': {'roboclaw_driver'},
-                'sensors': {'ekf_filter_node', 'wheel_odometry', 'zed_odom_covariance', 'urg_node2', 'zed_node', 'robot_state_publisher'},
-                'joystick': {'joy_node', 'teleop_joy'},
-                'slam_mapping': {'slam_toolbox'}, 'slam_localization': {'slam_toolbox'},
-                'rtab_mapping': {'rtabmap'}, 'rtab_localization': {'rtabmap'},
-                'amcl': {'amcl', 'map_server', 'amcl_recovery'},
-                'navigation': {'controller_server', 'planner_server', 'behavior_server', 'bt_navigator', 'velocity_smoother'},
-            }
-            allowed = set().union(*(groups.get(key, set()) for key in owned)) if owned else set()
-            known = set().union(*groups.values())
-            names = node.get_node_names()
-            foreign = (set(names) & known) - allowed
-            foreign.update(name for name in known if names.count(name) > 1)
-            foreign.update(info.node_name for info in node.get_publishers_info_by_topic('/cmd_vel') if info.node_name not in allowed)
-            if foreign:
-                raise OperationError(409, 'external_stack', 'Externally managed or duplicate ROS nodes detected; stop them outside this gateway: ' + ', '.join(sorted(foreign)))
+            check_external_stack(node, owned)
         operations = OperationManager(ProcessBackend(cwd=str(workspace)), workspace,
                                       enabled=args.enable_commands, motion_enabled=args.enable_motion,
                                       external_guard=external_guard)
