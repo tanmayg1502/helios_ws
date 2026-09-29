@@ -201,6 +201,8 @@ class TelemetryHandler(BaseHTTPRequestHandler):
 def arguments(description):
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--enable-commands", action="store_true")
+    parser.add_argument("--enable-motion", action="store_true",
+                        help="Explicitly allow motion-capable operations after supervised robot safety preparation")
     parser.add_argument("--exclusive-stack-control", action="store_true", help="Attest no laptop or other process controls the ROS stack")
     parser.add_argument("--workspace", default=".", help="Built trusted Helios workspace root")
     parser.add_argument("--host", default="127.0.0.1")
@@ -208,6 +210,8 @@ def arguments(description):
     parser.add_argument("--behind-tls-proxy", action="store_true",
                         help="Acknowledge a secured TLS proxy and firewall protect a non-loopback listener")
     args, ros_args = parser.parse_known_args()
+    if args.enable_motion and not args.enable_commands:
+        parser.error("--enable-motion requires --enable-commands")
     try:
         loopback = ipaddress.ip_address(args.host).is_loopback
     except ValueError:

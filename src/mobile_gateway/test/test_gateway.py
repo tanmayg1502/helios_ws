@@ -1,15 +1,17 @@
 """Contract, validation and real loopback socket tests; no ROS/hardware required."""
 import http.client
+import io
 import json
 import math
 import os
 import socket
+import sys
 import threading
 import time
 import unittest
 from unittest.mock import patch
 
-from mobile_gateway.server import TelemetryServer, operator_token_from_environment, token_from_environment
+from mobile_gateway.server import TelemetryServer, arguments, operator_token_from_environment, token_from_environment
 from mobile_gateway.state import TelemetryState
 
 TOKEN = 'test-only-token-' + 'a' * 32
@@ -199,6 +201,15 @@ class SocketTests(unittest.TestCase):
             self.assertIsNone(operator_token_from_environment())
         with self.assertRaises(ValueError):
             TelemetryServer(('127.0.0.1', 0), TelemetryState(), TOKEN, operator_token=TOKEN)
+
+    def test_motion_flag_requires_command_mode(self):
+        with patch.object(sys, 'argv', ['gateway', '--enable-motion']), \
+                patch.object(sys, 'stderr', new_callable=io.StringIO), self.assertRaises(SystemExit):
+            arguments('gateway')
+        with patch.object(sys, 'argv', ['gateway', '--enable-commands', '--enable-motion']):
+            args, extra = arguments('gateway')
+        self.assertTrue(args.enable_motion)
+        self.assertEqual(extra, [])
 
 
 if __name__ == '__main__':

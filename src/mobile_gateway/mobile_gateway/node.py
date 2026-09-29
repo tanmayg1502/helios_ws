@@ -81,7 +81,8 @@ def main():
             if foreign:
                 raise OperationError(409, 'external_stack', 'Externally managed or duplicate ROS nodes detected; stop them outside this gateway: ' + ', '.join(sorted(foreign)))
         operations = OperationManager(ProcessBackend(cwd=str(workspace)), workspace,
-                                      enabled=args.enable_commands, external_guard=external_guard)
+                                      enabled=args.enable_commands, motion_enabled=args.enable_motion,
+                                      external_guard=external_guard)
         server = TelemetryServer((args.host, args.port), state, token, operations=operations,
                                  operator_token=operator_token)
         worker = threading.Thread(target=server.serve_forever, daemon=True)

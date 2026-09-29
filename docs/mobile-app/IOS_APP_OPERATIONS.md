@@ -44,6 +44,7 @@ ros2 run mobile_gateway mobile_gateway --workspace "$PWD" \
 ```
 
 Keep the gateway unprivileged with the robot's existing device permissions. Configure trusted HTTPS and permit the documented operation POST routes in the reverse proxy; the old telemetry-only proxy route is insufficient. The gateway defaults to telemetry-only without those explicit flags.
+This initial command mode still rejects motion-capable starts. A local supervisor may restart with `--enable-motion` only for controlled physical acceptance after preparing an independent hardware stop. This does not verify robot safety.
 
 [Authoritative gateway catalog, constraints, and proxy configuration](GATEWAY_OPERATIONS.md)
 

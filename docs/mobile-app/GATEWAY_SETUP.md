@@ -2,7 +2,7 @@
 
 **Start here:** [Pranav’s complete Jetson-to-iPhone setup and handoff](PRANAV_SETUP.md).
 
-A small ROS 2 Python package providing authenticated HTTP telemetry and opt-in managed runbook operations for a mobile client. By default only telemetry is enabled. An explicitly enabled operation manager can start/stop allowlisted ROS launch processes and run fixed save/recovery/diagnostic commands. It never accepts arbitrary shell input or submits navigation goals. No physical hardware was actuated during development. See [the operation catalog and API](GATEWAY_OPERATIONS.md).
+A small ROS 2 Python package providing authenticated HTTP telemetry and opt-in managed runbook operations for a mobile client. By default only telemetry is enabled. Managed commands require `--enable-commands`; motion-capable commands also require a separate `--enable-motion` flag after supervised robot safety preparation. The manager can start/stop allowlisted ROS launch processes and run fixed save/recovery/diagnostic commands. It never accepts arbitrary shell input or submits navigation goals. No physical hardware was actuated during development. See [the operation catalog and API](GATEWAY_OPERATIONS.md).
 
 ## Repository integration
 

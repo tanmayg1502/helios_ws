@@ -30,7 +30,8 @@ def main():
                        range_min=0.02, range_max=10.0)
             stop.wait(0.1)
 
-    operations = OperationManager(SimulatedProcessBackend(), Path(args.workspace), enabled=True, simulated=True)
+    operations = OperationManager(SimulatedProcessBackend(), Path(args.workspace),
+                                  enabled=True, simulated=True, motion_enabled=True)
     server = TelemetryServer((args.host, args.port), state, token_from_environment(), operations=operations,
                              operator_token=operator_token_from_environment(required=True))
     updater = threading.Thread(target=update, daemon=True)

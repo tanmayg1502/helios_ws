@@ -20,9 +20,11 @@ class OperationError(Exception):
 
 class OperationManager:
     def __init__(self, backend, workspace, *, enabled=False, simulated=False,
-                 clock=time.monotonic, lease_seconds=10., external_guard=None):
+                 clock=time.monotonic, lease_seconds=10., external_guard=None,
+                 motion_enabled=False):
         self.backend, self.workspace = backend, Path(workspace)
         self.enabled, self.simulated = enabled, simulated
+        self.motion_enabled = motion_enabled
         self.clock, self.lease_seconds = clock, lease_seconds
         self.external_guard = external_guard
         self.lock = threading.RLock()
@@ -108,7 +110,8 @@ class OperationManager:
                 item['requires_confirmation'] = item.pop('movement_capable')
                 definitions.append(item)
             return {'api_version': 1, 'source': 'fixture' if self.simulated else 'ros2',
-                    'commands_enabled': self.enabled, 'lease': self._lease(),
+                    'commands_enabled': self.enabled, 'motion_enabled': self.motion_enabled,
+                    'lease': self._lease(),
                     'operations': definitions, 'jobs': [self._summary(key) for key in self.jobs]}
 
     def _summary(self, job_id):
@@ -133,6 +136,8 @@ class OperationManager:
             op = OPERATIONS.get(operation_id)
             if op is None:
                 raise OperationError(404, 'operation_not_found', 'Unknown operation.')
+            if op.movement_capable and not self.motion_enabled:
+                raise OperationError(403, 'motion_disabled', 'Motion-capable operations are disabled on this gateway.')
             if op.movement_capable and body.get('confirm') is not True:
                 raise OperationError(403, 'confirmation_required', 'This operation can enable robot motion; explicit confirmation is required.')
             active = self._active()

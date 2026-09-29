@@ -16,7 +16,8 @@ CLIENT = 'client-http-0001'
 
 class OperationHTTPTests(unittest.TestCase):
     def setUp(self):
-        self.manager = OperationManager(SimulatedProcessBackend(), '/fixture', enabled=True, simulated=True)
+        self.manager = OperationManager(SimulatedProcessBackend(), '/fixture', enabled=True,
+                                        simulated=True, motion_enabled=True)
         self.server = TelemetryServer(('127.0.0.1',0), TelemetryState(source='fixture'), TOKEN,
                                       operations=self.manager, operator_token=OPERATOR_TOKEN, socket_timeout=.5)
         self.worker = threading.Thread(target=self.server.serve_forever,kwargs={'poll_interval':.01},daemon=True)
@@ -54,6 +55,7 @@ class OperationHTTPTests(unittest.TestCase):
         self.assertEqual(headers['Cache-Control'],'no-store')
         self.assertEqual(body['source'],'fixture')
         self.assertTrue(body['commands_enabled'])
+        self.assertTrue(body['motion_enabled'])
         self.assertTrue(next(op for op in body['operations'] if op['id']=='motors')['requires_confirmation'])
 
     def test_heartbeat_confirmation_start_idempotency_job_stop(self):

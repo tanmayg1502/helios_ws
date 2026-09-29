@@ -111,7 +111,8 @@ class ManagerTests(unittest.TestCase):
     def setUp(self):
         self.now = [10.]
         self.backend = TrackingBackend()
-        self.manager = OperationManager(self.backend,'/fixture',enabled=True,simulated=True,clock=lambda:self.now[0])
+        self.manager = OperationManager(self.backend,'/fixture',enabled=True,simulated=True,
+                                        motion_enabled=True,clock=lambda:self.now[0])
         self.addCleanup(self.manager.shutdown)
         self.client='client-0001'
         self.counter=0
@@ -135,6 +136,25 @@ class ManagerTests(unittest.TestCase):
         self.assert_code('commands_disabled',lambda:self.manager.heartbeat(self.client))
         self.assert_code('commands_disabled',lambda:self.start('motors'))
         self.assertFalse(self.manager.catalog()['commands_enabled'])
+
+    def test_motion_requires_a_separate_explicit_gate(self):
+        backend = TrackingBackend()
+        manager = OperationManager(backend, '/fixture', enabled=True, simulated=False)
+        self.addCleanup(manager.shutdown)
+        manager.heartbeat(self.client)
+        self.assertFalse(manager.catalog()['motion_enabled'])
+        for operation in ('motors', 'joystick', 'amcl', 'navigation',
+                          'recovery_relocalize', 'global_localization'):
+            with self.subTest(operation=operation):
+                with self.assertRaises(OperationError) as caught:
+                    manager.start(operation, {'client_id': self.client,
+                                               'request_id': 'motion-check-' + operation,
+                                               'confirm': True})
+                self.assertEqual(caught.exception.code, 'motion_disabled')
+        self.assertFalse(manager.jobs)
+        result = manager.start('diagnostics_nodes', {'client_id': self.client,
+                                                     'request_id': 'diagnostics-check'})
+        self.assertEqual(result['job']['operation_id'], 'diagnostics_nodes')
 
     def test_exclusive_lease_and_renewal(self):
         self.assert_code('lease_owned',lambda:self.manager.heartbeat('client-0002'))
@@ -249,7 +269,8 @@ class OutputVerificationTests(unittest.TestCase):
                 for folder in ('slam_toolbox','rtabmap'):
                     (workspace/'src/mapping_localization_pkg'/folder/'maps').mkdir(parents=True)
                 backend=SimulatedProcessBackend()  # Never creates subprocesses.
-                manager=OperationManager(backend,workspace,enabled=True,simulated=False)
+                manager=OperationManager(backend,workspace,enabled=True,simulated=False,
+                                         motion_enabled=True)
                 count=0
                 def start(op,parameters=None):
                     nonlocal count

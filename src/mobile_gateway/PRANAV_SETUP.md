@@ -174,7 +174,7 @@ PY
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/v1/telemetry
 ```
 
-Expect `api_version: 1`, `source: "ros2"`, `commands_enabled: false`, and **401** for the final unauthenticated curl request. If no sensors are running, `available: false` is correct. `source: ros2` identifies the adapter, not proof that physical sensors are producing data.
+Expect `api_version: 1`, `source: "ros2"`, `commands_enabled: false`, `motion_enabled: false`, and **401** for the final unauthenticated curl request. If no sensors are running, `available: false` is correct. `source: ros2` identifies the adapter, not proof that physical sensors are producing data.
 
 With the gateway still telemetry-only, use the robot's existing supervised runbook to start/observe the known-working sensor stack if it is not already running. Starting that stack may include the motor driver; keep its normal hardware precautions. In a correctly sourced diagnostic terminal:
 
@@ -288,9 +288,11 @@ ros2 run mobile_gateway mobile_gateway --workspace "$HELIOS_WS" \
   --enable-commands --exclusive-stack-control --host 127.0.0.1 --port 8080
 ```
 
-`--exclusive-stack-control` is your attestation that no other terminal/gateway controls this stack. ROS graph checks help reject duplicates but cannot establish exclusivity across races/hidden nodes. Do not launch additional robot commands from a laptop while the gateway owns the stack. Read-only diagnostics remain useful.
+`--exclusive-stack-control` is your attestation that no other terminal/gateway controls this stack. ROS graph checks help reject duplicates but cannot establish exclusivity across races/hidden nodes. Do not launch additional robot commands from a laptop while the gateway owns the stack. The catalog reports `motion_enabled: false`; motor/joystick/Nav2/recovery starts return `403 motion_disabled`, while diagnostics remain available.
 
 ## 11. First supervised startup and shutdown — optional managed-mode acceptance
+
+Before starting motors, verify an independent hardware stop, a clear test area and a local supervisor. Stop the diagnostics-only gateway and restart the step 10 command with `--enable-motion` added. This extra flag is a deliberate software gate for a supervised acceptance attempt, **not** proof that the stop, ROS integration or robot behavior has been validated. Never rely on lease expiry for physical safety; remove the flag when acceptance work is over.
 
 Keep the phone awake and the app **foreground**. In **Operations**, explicitly tap **Acquire control session**; simply viewing telemetry/catalog does not claim the lease. Check **Control session active**. Another controlling client must finish/release by lease expiry before you can acquire it.
 
