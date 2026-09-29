@@ -53,7 +53,7 @@ Start the companion fixture as described in README. The Debug app requires **Con
 
 ```sh
 HELIOS_TEST_ENDPOINT=http://localhost:18080 \
-HELIOS_GATEWAY_TOKEN=helios-local-fixture-token-32-chars-only \
+HELIOS_GATEWAY_TOKEN=helios-local-operator-token-32-chars-only \
 ./Scripts/check-operations.sh
 ```
 

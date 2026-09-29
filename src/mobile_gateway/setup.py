@@ -12,7 +12,7 @@ setup(
     zip_safe=True,
     maintainer="pran",
     maintainer_email="upadhyp1@uci.edu",
-    description="Authenticated read-only mobile telemetry gateway for Helios",
+    description="Authenticated mobile telemetry and opt-in managed operations for Helios",
     license="Apache-2.0",
     entry_points={"console_scripts": ["mobile_gateway = mobile_gateway.node:main"]},
 )

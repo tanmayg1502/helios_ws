@@ -115,9 +115,9 @@ for pkg in mobile_gateway low_level_control_pkg sensor_fusion mapping_localizati
 done
 ```
 
-## 5. Create one durable production token — required
+## 5. Create two distinct durable production tokens — required
 
-Generate it **once**, retain it securely, and reuse it across gateway restarts. This creates a permissions-restricted file and refuses to overwrite an existing token:
+Generate each token **once**, retain both securely, and reuse them across gateway restarts. This creates a permissions-restricted file and refuses to overwrite existing credentials:
 
 ```bash
 python3 - <<'PY'
@@ -131,14 +131,15 @@ path = folder / 'gateway.env'
 fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
 with os.fdopen(fd, 'w') as stream:
     stream.write('export HELIOS_GATEWAY_TOKEN=' + secrets.token_urlsafe(32) + '\n')
-print('Created protected gateway.env; token was not printed.')
+    stream.write('export HELIOS_OPERATOR_TOKEN=' + secrets.token_urlsafe(32) + '\n')
+print('Created protected gateway.env; tokens were not printed.')
 PY
 source "$HOME/.config/helios/gateway.env"
 ```
 
-If the file already exists, reuse it with `source` rather than regenerating it. Retrieve only the token value in a trusted local editor/secure transfer when entering it into the phone. Never use the fixture's public test token for the robot. Avoid `set -x`, printing the environment, putting a token in a URL, or recording it in screenshots. The app currently keeps the URL/token **in memory**, so expect to re-enter them after relaunch; it does not provide persistent credential storage.
+If the file already exists, reuse it with `source` rather than regenerating it; if it has only the telemetry token, securely add a distinct random `HELIOS_OPERATOR_TOKEN` without replacing the existing one. `HELIOS_GATEWAY_TOKEN` can read telemetry only; the operator token can read telemetry and all operation routes. The existing one-token phone app needs the **operator** value to show the catalog or manage commands. A read-only client should receive only the telemetry token. Retrieve values using a trusted local editor/secure transfer. Never use the fixture's public test tokens for the robot. Avoid `set -x`, printing the environment, putting tokens in URLs, or recording them in screenshots. The app currently keeps the URL/token **in memory**, so expect to re-enter it after relaunch; it does not provide persistent credential storage.
 
-For rotation, stop managed work and the gateway, deliberately replace the protected file with a new generated token, restart, and update authorized phones. All holders of this shared token have operator authority when commands are enabled.
+For rotation, stop managed work and the gateway, deliberately replace the relevant protected secret, restart, and update its authorized clients. Never use the same value for both roles; only holders of the operator token have operation authority when commands are enabled.
 
 ## 6. Prove loopback telemetry first — required
 
@@ -153,15 +154,16 @@ source "$HOME/.config/helios/gateway.env"
 ros2 run mobile_gateway mobile_gateway --host 127.0.0.1 --port 8080
 ```
 
-In a second Jetson terminal, load the same token and read both endpoints without putting the token in a command-line argument:
+In a second Jetson terminal, load the protected tokens and read both endpoints without putting either token in a command-line argument:
 
 ```bash
 source "$HOME/.config/helios/gateway.env"
 python3 - <<'PY'
 import json, os, urllib.request
 for route in ('telemetry', 'operations'):
+    token_name = 'HELIOS_GATEWAY_TOKEN' if route == 'telemetry' else 'HELIOS_OPERATOR_TOKEN'
     req = urllib.request.Request('http://127.0.0.1:8080/v1/' + route,
-        headers={'Authorization': 'Bearer ' + os.environ['HELIOS_GATEWAY_TOKEN']})
+        headers={'Authorization': 'Bearer ' + os.environ[token_name]})
     with urllib.request.urlopen(req, timeout=5) as response:
         data = json.load(response)
     if route == 'telemetry':
@@ -260,7 +262,7 @@ Keep the gateway and proxy running. Put the phone on the intended LAN/VPN, then:
 
 1. Open **Connect**.
 2. Enter the base URL, e.g. `https://robot.example.net`. **Do not append `/v1/telemetry`**, a query, or credentials.
-3. Enter the exact token **value** from the protected file, without `Bearer ` or `export HELIOS_GATEWAY_TOKEN=`.
+3. Enter the exact **operator token** value from the protected file, without `Bearer ` or `export HELIOS_OPERATOR_TOKEN=`. This phone is an authorized operator; read-only clients should instead use the telemetry token and cannot access the Operations tab.
 4. Tap **Connect** and allow Local Network access if iOS asks.
 5. Open **Overview** and verify frames, SI values and freshness against the Jetson's readings. Missing sensors must look unavailable. The **Map** tab says “Live map unavailable”; the gateway does not provide captured maps.
 6. Open **Operations** to verify the catalog loads but commands are disabled. Do not acquire control at this stage.

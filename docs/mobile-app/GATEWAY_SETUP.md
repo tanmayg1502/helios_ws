@@ -44,7 +44,7 @@ export HELIOS_GATEWAY_TOKEN="$(python3 -c 'import secrets; print(secrets.token_u
 ros2 run mobile_gateway mobile_gateway --host 127.0.0.1 --port 8080
 ```
 
-Generate and securely retain one token for the gateway and mobile client; regenerating it invalidates the previous one when the gateway restarts. Startup rejects tokens shorter than 32 ASCII non-whitespace characters. Do not commit it, put it in a URL, or paste it into logs. A service manager may load it from a permissions-restricted environment file; avoid command-line token arguments. Configure the same ROS domain and middleware environment as the publishers. Launch existing sensors separately according to their own operator procedures; starting this gateway alone yields unavailable telemetry.
+Generate and securely retain this telemetry-only token; regenerating it invalidates the previous one when the gateway restarts. For the operation catalog and jobs, generate a **different** `HELIOS_OPERATOR_TOKEN` with the same random-token command and load it from a protected environment file. The operator token can also read telemetry, so the current one-token mobile client can use it when operated by a trusted controller; a read-only client gets only the telemetry token. Operation routes reject the telemetry token even when commands are enabled, and enabling commands without a separate operator token fails startup. Startup rejects tokens shorter than 32 ASCII non-whitespace characters or identical tokens. Do not commit them, put them in URLs, or paste them into logs. A service manager may load them from a permissions-restricted environment file; avoid command-line token arguments. Configure the same ROS domain and middleware environment as the publishers. Launch existing sensors separately according to their own operator procedures; starting this gateway alone yields unavailable telemetry.
 
 Topic overrides:
 
@@ -93,10 +93,11 @@ These commands require Python 3 and no ROS installation. From the workspace root
 ```bash
 PYTHONPATH=src/mobile_gateway python3 -m unittest discover -s src/mobile_gateway/test -v
 export HELIOS_GATEWAY_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+export HELIOS_OPERATOR_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 PYTHONPATH=src/mobile_gateway python3 -m mobile_gateway.fixture --port 8080
 ```
 
-The fixture continuously generates synthetic odometry and scan data using the same HTTP server and state validation as the ROS adapter. Its operation API is enabled with a simulated backend: services remain running and actions complete synthetically, with no subprocesses or files created. It prints a synthetic-only banner and never imports ROS or contacts hardware. Use the loopback URL for a same-host development client; a phone requires the TLS deployment above. Stop with Ctrl-C. Never present fixture values as live robot measurements.
+The fixture continuously generates synthetic odometry and scan data using the same HTTP server and state validation as the ROS adapter. Its operation API requires the separate operator token and uses a simulated backend: services remain running and actions complete synthetically, with no subprocesses or files created. Configure an operations-capable fixture client with the operator token; it can also read telemetry. The fixture never imports ROS or contacts hardware. Use the loopback URL for a same-host development client; a phone requires the TLS deployment above. Stop with Ctrl-C. Never present fixture values as live robot measurements.
 
 Tests exercise actual loopback sockets, authentication and duplicate headers, method/path rejection, disconnect recovery, socket timeout and slow-drip deadline/slot recovery, monotonic stale boundaries, quaternion normalization, finite-value rejection, and scan filtering/null semantics. Local tests do not prove ROS discovery/QoS, colcon installation on the robot, trusted TLS on a phone, real sensor freshness, or robot connectivity. Those require deployment validation by an operator. No hardware, map rendering, or navigation validation is claimed.
 

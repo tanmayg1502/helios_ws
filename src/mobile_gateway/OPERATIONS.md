@@ -47,7 +47,7 @@ First stop all laptop-launched robot stacks and command publishers. The gateway 
 cd ~/helios_ws
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
-# HELIOS_GATEWAY_TOKEN is already loaded from your protected environment.
+# Distinct HELIOS_GATEWAY_TOKEN and HELIOS_OPERATOR_TOKEN are loaded securely.
 ros2 run mobile_gateway mobile_gateway --workspace "$PWD" \
   --enable-commands --exclusive-stack-control --host 127.0.0.1 --port 8080
 ```
@@ -58,7 +58,7 @@ A `running` job means only that the launch leader has not exited; it does not pr
 
 ## API and control ownership
 
-Every route requires the same bearer authentication as telemetry. Request bodies are JSON objects, maximum 16 KiB, with `Content-Type: application/json` and one `Content-Length`. Chunked framing, duplicate fields, unknown operation parameters and nonfinite numbers are rejected. GET requests are observational and never acquire or renew control.
+All operation and job routes require `Authorization: Bearer <HELIOS_OPERATOR_TOKEN>`, including catalog reads. The distinct `HELIOS_GATEWAY_TOKEN` can read only `/v1/telemetry`; the operator token can read telemetry as well, so an existing one-token phone client can use the operator credential when trusted for control. Never give the operator token to a telemetry-only client. Request bodies are JSON objects, maximum 16 KiB, with `Content-Type: application/json` and one `Content-Length`. Chunked framing, duplicate fields, unknown operation parameters and nonfinite numbers are rejected. GET requests are observational and never acquire or renew control.
 
 - `GET /v1/operations`: `{api_version,source,commands_enabled,lease,operations,jobs}`. `source` is `ros2` or `fixture`. Catalog entries contain `id,title,description,kind` (`service`/`action`), `requires_confirmation`, `requires`, `requires_any`, `conflicts`, and `parameters`. Parameter entries contain `name,type,required` and optional `default,options,min,max`.
 - `POST /v1/control/heartbeat` with `{"client_id":"<client UUID>"}` acquires/renews the exclusive **10-second** lease. Returns `{api_version:1,lease:{client_id,remaining_seconds}}`. Renew every three seconds while the user actively controls the foreground app. Another owner receives 409. Viewing telemetry must not claim control implicitly.

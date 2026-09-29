@@ -7,7 +7,7 @@ from pathlib import Path
 from .operations import OperationManager
 from .processes import SimulatedProcessBackend
 
-from .server import TelemetryServer, arguments, token_from_environment
+from .server import TelemetryServer, arguments, operator_token_from_environment, token_from_environment
 from .state import TelemetryState
 
 
@@ -31,7 +31,8 @@ def main():
             stop.wait(0.1)
 
     operations = OperationManager(SimulatedProcessBackend(), Path(args.workspace), enabled=True, simulated=True)
-    server = TelemetryServer((args.host, args.port), state, token_from_environment(), operations=operations)
+    server = TelemetryServer((args.host, args.port), state, token_from_environment(), operations=operations,
+                             operator_token=operator_token_from_environment(required=True))
     updater = threading.Thread(target=update, daemon=True)
     updater.start()
     print(f"SYNTHETIC FIXTURE ONLY at {args.host}:{server.server_port}; no ROS or hardware", flush=True)

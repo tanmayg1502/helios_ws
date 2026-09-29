@@ -1,4 +1,4 @@
-"""Bounded read-only HTTP server; put a TLS reverse proxy in front remotely."""
+"""Bounded telemetry and opt-in operation HTTP server; proxy TLS remotely."""
 import argparse
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -9,11 +9,19 @@ import socket
 import threading
 
 
-def token_from_environment():
-    token = os.environ.get("HELIOS_GATEWAY_TOKEN", "")
+def _validate_token(token, name):
     if len(token) < 32 or not token.isascii() or any(c.isspace() for c in token):
-        raise ValueError("HELIOS_GATEWAY_TOKEN must contain at least 32 ASCII non-whitespace characters")
+        raise ValueError(f"{name} must contain at least 32 ASCII non-whitespace characters")
     return token
+
+
+def token_from_environment():
+    return _validate_token(os.environ.get("HELIOS_GATEWAY_TOKEN", ""), "HELIOS_GATEWAY_TOKEN")
+
+
+def operator_token_from_environment(*, required=False):
+    token = os.environ.get("HELIOS_OPERATOR_TOKEN", "")
+    return _validate_token(token, "HELIOS_OPERATOR_TOKEN") if token or required else None
 
 
 class TelemetryServer(ThreadingHTTPServer):
@@ -21,14 +29,21 @@ class TelemetryServer(ThreadingHTTPServer):
     allow_reuse_address = True
     request_queue_size = 16
 
-    def __init__(self, address, state, token, max_clients=8, socket_timeout=3.0, request_timeout=5.0, operations=None):
-        if len(token) < 32 or not token.isascii() or any(c.isspace() for c in token):
-            raise ValueError("A token of at least 32 ASCII non-whitespace characters is required")
+    def __init__(self, address, state, token, max_clients=8, socket_timeout=3.0, request_timeout=5.0,
+                 operations=None, operator_token=None):
+        _validate_token(token, "Telemetry token")
+        if operator_token is not None:
+            _validate_token(operator_token, "Operator token")
+            if hmac.compare_digest(token, operator_token):
+                raise ValueError("Telemetry and operator tokens must differ")
+        if operations is not None and operations.enabled and operator_token is None:
+            raise ValueError("Enabled operations require a separate operator token")
         if max_clients < 1 or socket_timeout <= 0 or request_timeout <= 0:
             raise ValueError("Client limit and socket timeout must be positive")
         self.operations = operations
         self.state = state
         self._token = token.encode("ascii")
+        self._operator_token = operator_token.encode("ascii") if operator_token is not None else None
         self._slots = threading.BoundedSemaphore(max_clients)
         self.socket_timeout = socket_timeout
         self.request_timeout = request_timeout
@@ -128,7 +143,10 @@ class TelemetryHandler(BaseHTTPRequestHandler):
             return
         headers = self.headers.get_all("Authorization", [])
         provided = headers[0].encode("utf-8") if len(headers) == 1 else b""
-        if not hmac.compare_digest(provided, b"Bearer " + self.server._token):
+        telemetry_access = hmac.compare_digest(provided, b"Bearer " + self.server._token)
+        operator_access = (hmac.compare_digest(provided, b"Bearer " + self.server._operator_token)
+                           if self.server._operator_token is not None else False)
+        if not (operator_access or (self.path == "/v1/telemetry" and telemetry_access)):
             self._reply(401, {"error": "unauthorized"})
             return
         is_read = self.path in ("/v1/telemetry", "/v1/operations") or (paths[1:3] == ["v1", "jobs"] and len(paths) == 4)
@@ -173,7 +191,7 @@ class TelemetryHandler(BaseHTTPRequestHandler):
             self._reply(400, {"error": "invalid_request", "message": str(error)[:200]})
 
     # BaseHTTPRequestHandler normally emits 501 for unknown methods. All parsed
-    # HTTP methods use the same explicit read-only dispatch instead.
+    # HTTP methods use the same explicit route and method dispatch instead.
     def __getattr__(self, name):
         if name.startswith("do_"):
             return self._dispatch

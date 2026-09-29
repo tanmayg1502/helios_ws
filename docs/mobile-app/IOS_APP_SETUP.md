@@ -46,16 +46,17 @@ The fixture uses the same HTTP server and telemetry state code as the ROS node b
 
 ```sh
 export HELIOS_GATEWAY_TOKEN=helios-local-fixture-token-32-chars-only
+export HELIOS_OPERATOR_TOKEN=helios-local-operator-token-32-chars-only
 PYTHONPATH=src/mobile_gateway python3 -m mobile_gateway.fixture --port 18080
 ```
 
-This is a disposable public test token, never a robot credential. In a Debug simulator build, first choose **Connect → Enable developer mode → Enable simulation**, then use `http://localhost:18080` and that test token. A real phone's `localhost` means the phone itself; use the HTTPS setup above for an off-device gateway.
+These are disposable public test tokens, never robot credentials. In a Debug simulator build, first choose **Connect → Enable developer mode → Enable simulation**, then use `http://localhost:18080` and the **operator** test token so the app can access telemetry and operations. A real phone's `localhost` means the phone itself; use the HTTPS setup above for an off-device gateway.
 
 From this iOS project:
 
 ```sh
 HELIOS_TEST_ENDPOINT=http://localhost:18080 \
-HELIOS_GATEWAY_TOKEN=helios-local-fixture-token-32-chars-only \
+HELIOS_GATEWAY_TOKEN=helios-local-operator-token-32-chars-only \
 ./Scripts/check-gateway.sh
 
 xcodebuild -project Helios.xcodeproj -scheme Helios \

@@ -32,6 +32,7 @@ class ProcessBackend:
         self._clock = clock
         self._env = dict(os.environ if environ is None else environ)
         self._env.pop('HELIOS_GATEWAY_TOKEN', None)
+        self._env.pop('HELIOS_OPERATOR_TOKEN', None)
         self._lock = threading.RLock()
         self._entries = {}
         self._closed = False

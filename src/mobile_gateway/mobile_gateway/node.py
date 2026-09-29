@@ -5,7 +5,7 @@ from pathlib import Path
 from .operations import OperationError, OperationManager
 from .processes import ProcessBackend
 
-from .server import TelemetryServer, arguments, token_from_environment
+from .server import TelemetryServer, arguments, operator_token_from_environment, token_from_environment
 from .state import TelemetryState
 
 
@@ -18,8 +18,9 @@ def main():
     from rclpy.qos import qos_profile_sensor_data
     from sensor_msgs.msg import LaserScan
 
-    args, ros_args = arguments("Helios read-only ROS telemetry gateway")
+    args, ros_args = arguments("Helios ROS telemetry and opt-in operations gateway")
     token = token_from_environment()
+    operator_token = operator_token_from_environment(required=args.enable_commands)
     workspace = Path(args.workspace).expanduser().resolve()
     if args.enable_commands:
         if not args.exclusive_stack_control:
@@ -81,7 +82,8 @@ def main():
                 raise OperationError(409, 'external_stack', 'Externally managed or duplicate ROS nodes detected; stop them outside this gateway: ' + ', '.join(sorted(foreign)))
         operations = OperationManager(ProcessBackend(cwd=str(workspace)), workspace,
                                       enabled=args.enable_commands, external_guard=external_guard)
-        server = TelemetryServer((args.host, args.port), state, token, operations=operations)
+        server = TelemetryServer((args.host, args.port), state, token, operations=operations,
+                                 operator_token=operator_token)
         worker = threading.Thread(target=server.serve_forever, daemon=True)
         worker.start()
         node.get_logger().info("Mobile gateway started; managed commands " + ("enabled" if args.enable_commands else "disabled"))

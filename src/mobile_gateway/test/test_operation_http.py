@@ -10,13 +10,15 @@ from mobile_gateway.server import TelemetryServer
 from mobile_gateway.state import TelemetryState
 
 TOKEN = 'operation-socket-test-' + 'x'*32
+OPERATOR_TOKEN = 'operator-socket-test-' + 'y'*32
 CLIENT = 'client-http-0001'
 
 
 class OperationHTTPTests(unittest.TestCase):
     def setUp(self):
         self.manager = OperationManager(SimulatedProcessBackend(), '/fixture', enabled=True, simulated=True)
-        self.server = TelemetryServer(('127.0.0.1',0), TelemetryState(source='fixture'), TOKEN, operations=self.manager, socket_timeout=.5)
+        self.server = TelemetryServer(('127.0.0.1',0), TelemetryState(source='fixture'), TOKEN,
+                                      operations=self.manager, operator_token=OPERATOR_TOKEN, socket_timeout=.5)
         self.worker = threading.Thread(target=self.server.serve_forever,kwargs={'poll_interval':.01},daemon=True)
         self.worker.start()
 
@@ -26,7 +28,7 @@ class OperationHTTPTests(unittest.TestCase):
         self.worker.join(2)
         self.manager.shutdown()
 
-    def request(self, method, path, body=None, *, auth='Bearer '+TOKEN, raw=None, headers=None):
+    def request(self, method, path, body=None, *, auth='Bearer '+OPERATOR_TOKEN, raw=None, headers=None):
         conn = http.client.HTTPConnection(*self.server.server_address, timeout=2)
         try:
             payload = raw if raw is not None else json.dumps(body).encode() if body is not None else b''
@@ -82,6 +84,39 @@ class OperationHTTPTests(unittest.TestCase):
         self.assertFalse(self.manager.jobs)
         self.assertIsNone(self.manager.owner)
 
+    def test_telemetry_token_never_authorizes_operation_routes(self):
+        read_auth = 'Bearer ' + TOKEN
+        self.assertEqual(self.request('GET', '/v1/telemetry', auth=read_auth)[0], 200)
+        self.assertEqual(self.request('GET', '/v1/telemetry')[0], 200)
+        self.heartbeat()
+        status, _, started = self.post('/v1/operations/motors/start', {
+            'client_id': CLIENT, 'request_id': 'read-token-check-01',
+            'parameters': {}, 'confirm': True})
+        self.assertEqual(status, 202)
+        job_id = started['job']['id']
+        routes = [
+            ('GET', '/v1/operations', None),
+            ('GET', '/v1/jobs/' + job_id, None),
+            ('POST', '/v1/control/heartbeat', {'client_id': CLIENT}),
+            ('POST', '/v1/operations/motors/start', {'client_id': CLIENT, 'request_id': 'read-token-check-02', 'confirm': True}),
+            ('POST', '/v1/jobs/' + job_id + '/stop', {'client_id': CLIENT}),
+            ('POST', '/v1/operations/stop-all', {'client_id': CLIENT}),
+        ]
+        for method, path, body in routes:
+            with self.subTest(method=method, path=path):
+                status, _, result = self.request(method, path, body, auth=read_auth)
+                self.assertEqual(status, 401)
+                self.assertEqual(result['error'], 'unauthorized')
+        self.assertEqual(self.manager.job(job_id)['job']['state'], 'running')
+        self.assertEqual(self.manager.owner, CLIENT)
+
+    def test_enabled_operations_require_distinct_operator_token(self):
+        with self.assertRaises(ValueError):
+            TelemetryServer(('127.0.0.1', 0), TelemetryState(), TOKEN, operations=self.manager)
+        with self.assertRaises(ValueError):
+            TelemetryServer(('127.0.0.1', 0), TelemetryState(), TOKEN,
+                            operations=self.manager, operator_token=TOKEN)
+
     def test_unknown_job_and_bad_method(self):
         self.assertEqual(self.request('GET','/v1/jobs/missing')[0],404)
         for method,path,allow in [('POST','/v1/operations','GET'),('GET','/v1/control/heartbeat','POST'),('DELETE','/v1/jobs/missing','GET'),('CUSTOM','/v1/operations/motors/start','POST')]:
@@ -108,10 +143,10 @@ class OperationHTTPTests(unittest.TestCase):
             conn=http.client.HTTPConnection(*self.server.server_address,timeout=2)
             try:
                 conn.putrequest('POST','/v1/control/heartbeat')
-                conn.putheader('Authorization','Bearer '+TOKEN)
+                conn.putheader('Authorization','Bearer '+OPERATOR_TOKEN)
                 conn.putheader('Content-Length','2')
                 conn.putheader('Content-Type','application/json')
-                conn.putheader(duplicate,'2' if duplicate=='Content-Length' else 'Bearer '+TOKEN)
+                conn.putheader(duplicate,'2' if duplicate=='Content-Length' else 'Bearer '+OPERATOR_TOKEN)
                 conn.endheaders(b'{}')
                 response=conn.getresponse()
                 self.assertEqual(response.status,expected)

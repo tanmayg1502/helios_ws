@@ -2,7 +2,7 @@
 <package format="3">
   <name>mobile_gateway</name>
   <version>0.1.0</version>
-  <description>Authenticated read-only mobile telemetry gateway for Helios</description>
+  <description>Authenticated mobile telemetry and opt-in managed operations for Helios</description>
   <maintainer email="upadhyp1@uci.edu">pran</maintainer>
   <license>Apache-2.0</license>
   <buildtool_depend>ament_python</buildtool_depend>

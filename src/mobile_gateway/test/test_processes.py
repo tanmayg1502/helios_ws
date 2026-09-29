@@ -46,7 +46,8 @@ def backend_for(proc, **kwargs):
 def test_launch_environment_isolation_and_bounded_output():
     proc = FakeProcess(b'x' * 2048)
     backend, calls, launches = backend_for(
-        proc, environ={'HELIOS_GATEWAY_TOKEN': 'do-not-inherit', 'ROS_DOMAIN_ID': '7'})
+        proc, environ={'HELIOS_GATEWAY_TOKEN': 'do-not-inherit',
+                       'HELIOS_OPERATOR_TOKEN': 'do-not-inherit', 'ROS_DOMAIN_ID': '7'})
     try:
         backend.start('job', ['ros2', 'launch', 'example'])
         argv, options = launches[0]

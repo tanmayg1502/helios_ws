@@ -9,7 +9,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from mobile_gateway.server import TelemetryServer, token_from_environment
+from mobile_gateway.server import TelemetryServer, operator_token_from_environment, token_from_environment
 from mobile_gateway.state import TelemetryState
 
 TOKEN = 'test-only-token-' + 'a' * 32
@@ -188,8 +188,17 @@ class SocketTests(unittest.TestCase):
             with patch.dict(os.environ, {'HELIOS_GATEWAY_TOKEN': token}):
                 with self.assertRaises(ValueError):
                     token_from_environment()
+            with patch.dict(os.environ, {'HELIOS_OPERATOR_TOKEN': token}):
+                with self.assertRaises(ValueError):
+                    operator_token_from_environment(required=True)
         with patch.dict(os.environ, {'HELIOS_GATEWAY_TOKEN': TOKEN}):
             self.assertEqual(token_from_environment(), TOKEN)
+        with patch.dict(os.environ, {'HELIOS_OPERATOR_TOKEN': TOKEN}):
+            self.assertEqual(operator_token_from_environment(required=True), TOKEN)
+        with patch.dict(os.environ, {'HELIOS_OPERATOR_TOKEN': ''}):
+            self.assertIsNone(operator_token_from_environment())
+        with self.assertRaises(ValueError):
+            TelemetryServer(('127.0.0.1', 0), TelemetryState(), TOKEN, operator_token=TOKEN)
 
 
 if __name__ == '__main__':
